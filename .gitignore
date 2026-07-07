@@ -1,0 +1,26 @@
+# secrets / local config
+.env
+config.yaml
+secrets/
+*.key
+*.pem
+
+# generated work logs (선택: 커밋하고 싶으면 이 줄 삭제)
+worklogs/*.md
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.uv/
+*.egg-info/
+.pytest_cache/
+
+# PyInstaller 빌드 산출물
+dist/
+build/
+*.spec
+
+# 머신 종속(프리뷰 런처 등)
+.claude/
