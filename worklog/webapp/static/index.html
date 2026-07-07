@@ -87,6 +87,8 @@
   .gen-screen .gen-sub{font-size:13px;color:var(--muted)}
   .fade-in{animation:fadeIn .28s ease both}
   @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .doc-loading{display:flex;align-items:center;gap:9px;color:var(--text-2);font-size:14px;padding:22px 2px}
+  .doc-loading .spin{color:var(--accent);font-size:18px;line-height:1}
   .kpis{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
   .kpi{background:var(--surface-2);border-radius:10px;padding:8px 12px;min-width:80px}
   .kpi .n{font-size:17px;font-weight:600}
@@ -362,7 +364,7 @@
 
 <script>
 (function(){
-  var S = { date:null, facts:"", signal:"", availability:"", analysis:null, analysis_md:"", summary:null, evidence:null, statuses:[], editing:false };
+  var S = { date:null, facts:"", signal:"", availability:"", analysis:null, analysis_md:"", summary:null, evidence:null, statuses:[], editing:false, summarizing:false };
   var scanRoots = [];   // git 스캔 루트(선택한 디렉토리 캐시)
   var $ = function(id){ return document.getElementById(id); };
 
@@ -465,7 +467,9 @@
     $("evwrap").style.display="block";
     $("savebar").style.display="flex";
     $("content-date").textContent = S.date;
-    $("view").innerHTML = renderMd(S.summary != null ? S.summary : "AI 요약을 사용하지 않았습니다. 근거 데이터를 참고하세요.");
+    $("view").innerHTML = S.summarizing
+      ? '<div class="doc-loading"><span class="spin">↻</span> AI 요약 중… 문서를 작성하고 있어요</div>'
+      : renderMd(S.summary != null ? S.summary : "AI 요약을 사용하지 않았습니다. 근거 데이터를 참고하세요.");
     $("chips").innerHTML = S.statuses.map(chipFor).join("");
     $("evidence").innerHTML = renderEvidence(S.evidence||{});
     renderAnalysis(S.analysis);
@@ -524,19 +528,23 @@
       markActive();
       if($("llm").checked && !res.body.empty){
         btn.innerHTML='<span class="spin">↻</span> AI 요약 중…';
-        showGenerating("AI 요약 중…", "시간대별로 정리하고 있어요");
+        // 수집 완료 → 조사된 내용(지표·근거)을 하단에 바로 보여주고, 문서 영역만 '요약 중'
+        S.summarizing = true;
+        revealContent();
         return api("/api/summarize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({date:S.date,signal_markdown:S.signal,availability:S.availability})})
           .then(function(r2){ S.summary = (r2.body&&r2.body.summary_markdown)||null; })
           .catch(function(e){ S.summary = null; S._sumErr = e.message; })
           .then(function(){
-            revealContent();   // 완료되면 결과 화면으로 부드럽게 전환
+            S.summarizing = false;
+            showContent();          // 문서 영역을 요약으로 채움 (지표·근거는 유지)
+            fadeReplay($("view"));   // 문서만 살짝 페이드
             var t = S._sumErr ? ("요약 오류: "+S._sumErr) : (S.summary ? "요약 완료" : "요약기 미사용");
             S._sumErr = null;
             $("genstatus").textContent = t; $("genstatus").style.opacity = 1;
             setTimeout(function(){ $("genstatus").style.opacity = 0; }, 2400);
           });
       } else {
-        S.summary = null; revealContent();
+        S.summarizing = false; S.summary = null; revealContent();
       }
     }).catch(function(e){ showGenerating("생성 실패", "오류: "+e.message); })
       .finally(function(){ btn.disabled=false; btn.innerHTML="↻ 생성"; });
@@ -590,7 +598,7 @@
     setDateInput(d);
     api("/api/worklog?date="+encodeURIComponent(d)).then(function(res){
       if(!res.ok){ return; }
-      S.date=d; S.summary=res.body.markdown; S.facts=""; S.signal=""; S.availability=""; S.analysis=null; S.analysis_md=""; S.evidence={}; S.statuses=[];
+      S.date=d; S.summary=res.body.markdown; S.facts=""; S.signal=""; S.availability=""; S.analysis=null; S.analysis_md=""; S.evidence={}; S.statuses=[]; S.summarizing=false;
       // 저장된 일지 보기는 재저장 불가(이미 저장됨 · 갱신은 '생성'으로). 저장바 숨겨 이중 래핑 방지.
       $("empty").style.display="none"; $("generating").style.display="none"; $("content").style.display="block"; $("evwrap").style.display="none"; $("analysis").style.display="none"; $("savebar").style.display="none";
       $("content-date").textContent=d+" (저장됨)";
