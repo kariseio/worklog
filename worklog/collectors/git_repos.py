@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ..config import GitConfig
@@ -17,6 +19,47 @@ from .base import CollectContext, Collector, CollectorResult
 # git log 파서용 구분자
 _REC = "\x1e"   # record separator (커밋 시작)
 _FLD = "\x1f"   # field separator
+
+
+def _workers(n: int) -> int:
+    """동시 실행 스레드 수. git subprocess 는 I/O 바운드라 스레드로 잘 겹친다.
+
+    과도한 동시 실행(디스크 seek 경합·프로세스 폭주) 방지를 위해 상한을 둔다.
+    """
+    if n <= 1:
+        return 1
+    return min(n, min(32, (os.cpu_count() or 4) * 4))
+
+
+def _scan_many(roots: list[str], depth: int) -> list[str]:
+    """스캔 루트 여러 개를 '각각 병렬로' 탐색해 .git 폴더 경로들을 합친다."""
+    roots = [r for r in (roots or []) if r]
+    if not roots:
+        return []
+    if len(roots) == 1:
+        return _scan(roots[0], depth)
+    out: list[str] = []
+    with ThreadPoolExecutor(max_workers=_workers(len(roots))) as ex:
+        for res in ex.map(lambda r: _scan(r, depth), roots):
+            out.extend(res)
+    return out
+
+
+def _identify_many(paths: list[str]) -> list[tuple[str, str, str]]:
+    """후보 경로들의 (경로, git-common-dir, 저장소명) 을 병렬로 구한다(저장소 아니면 제외).
+
+    입력 순서를 보존하므로(중복 제거 시 first-seen) 결과가 결정론적이다.
+    """
+    if not paths:
+        return []
+    with ThreadPoolExecutor(max_workers=_workers(len(paths))) as ex:
+        idents = list(ex.map(_repo_identity, paths))
+    out: list[tuple[str, str, str]] = []
+    for p, ident in zip(paths, idents):
+        if ident:
+            canonical, name = ident
+            out.append((p, canonical, name))
+    return out
 
 
 class GitCollector(Collector):
@@ -39,12 +82,20 @@ class GitCollector(Collector):
                 "감시할 git 저장소가 없습니다. config.yaml 의 sources.git.repos / scan_roots 를 설정하세요.",
             )
 
-        commits: list[GitCommit] = []
-        for path, name, canonical in repos:
+        # 저장소별 git log 를 병렬로. 개별 저장소 실패는 전체를 막지 않는다.
+        def _one(item: tuple[str, str, str]):
+            path, name, canonical = item
             try:
-                commits.extend(self._log(path, name, canonical, ctx))
-            except Exception as e:  # noqa: BLE001  개별 저장소 실패는 전체를 막지 않음
-                warnings.append(f"git 로그 실패({path}): {e}")
+                return self._log(path, name, canonical, ctx), None
+            except Exception as e:  # noqa: BLE001
+                return [], f"git 로그 실패({path}): {e}"
+
+        commits: list[GitCommit] = []
+        with ThreadPoolExecutor(max_workers=_workers(len(repos))) as ex:
+            for cs, warn in ex.map(_one, repos):
+                commits.extend(cs)
+                if warn:
+                    warnings.append(warn)
 
         commits.sort(key=lambda c: c.when)
         return CollectorResult(name=self.name, data=GitData(commits=commits), warnings=warnings)
@@ -52,35 +103,38 @@ class GitCollector(Collector):
     # ------------------------------------------------------------------ #
 
     def _resolve_repos(self, warnings: list[str]) -> list[tuple[str, str, str]]:
-        """(경로, 저장소명, 식별키) 목록. 같은 저장소의 여러 worktree 는 하나로 합친다."""
-        by_identity: dict[str, tuple[str, str, str]] = {}
+        """(경로, 저장소명, 식별키) 목록. 같은 저장소의 여러 worktree 는 하나로 합친다.
 
-        def add(p: str):
-            if not (Path(p) / ".git").exists():
-                return
-            ident = _repo_identity(p)
-            if ident is None:
-                return
-            canonical, name = ident
-            by_identity.setdefault(canonical, (p, name, canonical))
+        후보 경로를 (repos → scan_roots(각 루트 병렬) → Claude cwd) 순서로 모은 뒤,
+        git 식별(git-common-dir)을 '저장소별 병렬'로 돌려 중복(worktree 포함)을 제거한다.
+        """
+        candidates: list[str] = []
 
         for r in self.cfg.repos:
             p = Path(r)
             if (p / ".git").exists():
-                add(r)
+                candidates.append(r)
             elif p.exists():
                 warnings.append(f"git 저장소가 아님(.git 없음): {r}")
             else:
                 warnings.append(f"경로 없음: {r}")
 
-        for root in self.cfg.scan_roots:
-            for repo in _scan(root, self.cfg.scan_depth):
-                add(repo)
+        # scan_all_drives 면 지정한 스캔 루트 대신 모든 고정 디스크를 훑는다.
+        if getattr(self.cfg, "scan_all_drives", False):
+            from ..util import fixed_drives
+            roots = fixed_drives()
+        else:
+            roots = self.cfg.scan_roots
+        candidates.extend(_scan_many(roots, self.cfg.scan_depth))
 
         if self.cfg.include_claude_cwds:
             for cwd in self.extra_repos:
-                add(cwd)
+                if cwd and (Path(cwd) / ".git").exists():
+                    candidates.append(cwd)
 
+        by_identity: dict[str, tuple[str, str, str]] = {}
+        for path, canonical, name in _identify_many(candidates):
+            by_identity.setdefault(canonical, (path, name, canonical))   # first-seen 유지
         return list(by_identity.values())
 
     def _log(self, repo: str, name: str, canonical: str, ctx: CollectContext) -> list[GitCommit]:

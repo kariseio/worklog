@@ -119,6 +119,72 @@ def test_naverworks_calendar_ids_roundtrip(client):
     assert cfg.naverworks.calendar_ids == ["id1", "id2"]
 
 
+def test_git_settings_roundtrip_and_depth_clamp(client):
+    """git 스캔 범위·루트·깊이가 저장/조회되고, 깊이는 1~12 로 클램프된다."""
+    from worklog.config import load_config
+
+    c, _ = client
+    r = c.post("/api/settings", json={"git": {
+        "enabled": True, "scan_all_drives": False,
+        "scan_roots": ["D:/root1", "D:/root2"], "scan_depth": 7,
+    }})
+    assert r.json()["ok"]
+
+    g = c.get("/api/settings").json()["git"]
+    assert g["scan_all_drives"] is False
+    assert g["scan_roots"] == ["D:/root1", "D:/root2"]
+    assert g["scan_depth"] == 7
+
+    cfg = load_config(None)   # WORKLOG_SETTINGS(temp) 오버레이
+    assert cfg.git.scan_depth == 7
+    assert cfg.git.scan_roots == ["D:/root1", "D:/root2"]
+    assert cfg.git.scan_all_drives is False
+    # 앱은 작성자 필터 없음 + Claude 폴더 항상 자동 포함
+    assert cfg.git.author == ""
+    assert cfg.git.include_claude_cwds is True
+
+    # 스캔 범위 미지정(전체 하드디스크) 기본값
+    assert c.post("/api/settings", json={"git": {"enabled": True}}).json()["ok"]
+    assert c.get("/api/settings").json()["git"]["scan_all_drives"] is True
+
+    # 클램프: 과대/과소/비정상 값
+    c.post("/api/settings", json={"git": {"scan_depth": 999}})
+    assert c.get("/api/settings").json()["git"]["scan_depth"] == 12
+    c.post("/api/settings", json={"git": {"scan_depth": 0}})
+    assert c.get("/api/settings").json()["git"]["scan_depth"] == 1
+    c.post("/api/settings", json={"git": {"scan_depth": "bad"}})
+    assert c.get("/api/settings").json()["git"]["scan_depth"] == 5
+
+
+def test_drives_endpoint_shape_and_consistency(client):
+    """/api/drives 는 [{path, label}] 이고, fixed_drives 경로와 일치한다."""
+    from worklog.util import fixed_drives
+
+    c, _ = client
+    ds = c.get("/api/drives").json()["drives"]
+    assert isinstance(ds, list)
+    for d in ds:
+        assert set(d.keys()) == {"path", "label"}
+        assert isinstance(d["path"], str) and isinstance(d["label"], str)
+    assert [d["path"] for d in ds] == fixed_drives()
+
+
+def test_collect_prunes_missing_scan_roots(client):
+    """생성(collect) 시 캐시의 스캔 루트 중 없어진 폴더는 제거된다."""
+    c, tmp = client
+    good = tmp / "good"
+    good.mkdir()
+    gone = tmp / "gone"   # 존재하지 않음
+    # 특정 드라이브 지정 모드(scan_all_drives=False)로 저장해야 실디스크 스캔을 피한다
+    c.post("/api/settings", json={"git": {"scan_all_drives": False,
+                                          "scan_roots": [str(good), str(gone)]}})
+
+    c.get("/api/collect", params={"date": "2026-07-06"})   # 생성 시점
+
+    store = json.loads((tmp / "settings.json").read_text(encoding="utf-8"))
+    assert store["sources"]["git"]["scan_roots"] == [str(good)]
+
+
 def test_notion_version_preserved_on_ui_save(client):
     """UI 는 version 을 안 보내므로, 저장 시 커스텀 version 이 기본값으로 덮이면 안 된다."""
     c, tmp = client

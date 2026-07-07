@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
-from .. import service
+from .. import __version__, service
 from ..collectors.naverworks import list_calendars as nw_list_calendars
 from ..collectors.naverworks import test_connection as nw_test
 from ..config import (
@@ -17,10 +20,12 @@ from ..config import (
     NaverWorksConfig,
     NotionOutputConfig,
     ObsidianOutputConfig,
+    app_settings_path,
     load_app_settings,
     load_config,
     save_app_settings,
 )
+from ..util import drives_info
 from ..models import DailyData, WorkLog
 from ..outputs.notion import test_connection as notion_test
 from ..outputs.obsidian import test_connection as obsidian_test
@@ -45,6 +50,30 @@ _show_cb = None
 def set_show_callback(fn) -> None:
     global _show_cb
     _show_cb = fn
+
+
+def _prune_missing_scan_roots() -> list[str]:
+    """캐시(settings.json)의 git 스캔 루트 중 실제로 없어진 폴더를 제거한다.
+
+    제거된 경로 목록을 돌려준다(없으면 빈 리스트). config.yaml 쪽은 건드리지 않는다.
+    """
+    store = load_app_settings()
+    sources = store.get("sources")
+    if not (isinstance(sources, dict) and isinstance(sources.get("git"), dict)):
+        return []
+    roots = sources["git"].get("scan_roots")
+    if not isinstance(roots, list) or not roots:
+        return []
+    kept, removed = [], []
+    for r in roots:
+        (kept if r and os.path.isdir(os.path.expanduser(str(r))) else removed).append(r)
+    if removed:
+        sources["git"]["scan_roots"] = kept
+        try:
+            save_app_settings(store)
+        except OSError:   # 저장 실패해도 생성은 계속(캐시 정리는 다음 기회에)
+            return []
+    return [r for r in removed if r]
 
 
 class SummarizeReq(BaseModel):
@@ -87,6 +116,7 @@ def create_app(config_path: str | None = None) -> "FastAPI":
     def status():
         c = cfg()
         return {
+            "version": __version__,
             "timezone": c.timezone,
             "enabled_sources": sorted(service.enabled_sources(c, None)),
             "summarizer": {"provider": c.summarizer.provider, "model": c.summarizer.model},
@@ -108,6 +138,7 @@ def create_app(config_path: str | None = None) -> "FastAPI":
             render_work_signal,
         )
 
+        _prune_missing_scan_roots()   # 생성 시점에 사라진 스캔 루트는 캐시에서 제거
         c = cfg()
         try:
             ctx, tz, target = service.make_context(c, date_str)
@@ -171,17 +202,56 @@ def create_app(config_path: str | None = None) -> "FastAPI":
             return JSONResponse({"markdown": None}, status_code=404)
         return {"markdown": md}
 
+    @app.post("/api/open-folder")
+    def open_folder(body: dict = Body(default={})):
+        """저장 폴더를 OS 파일 탐색기로 연다. 로컬 데스크톱 앱 전용."""
+        raw = (body or {}).get("path") or cfg().outputs.markdown.dir
+        target = Path(os.path.expanduser(raw))
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return JSONResponse({"ok": False, "message": f"폴더 생성 실패: {e}"}, status_code=400)
+        try:
+            if os.name == "nt":
+                os.startfile(str(target))  # noqa: S606
+            elif sys.platform == "darwin":
+                subprocess.run(["open", str(target)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(target)], check=False)
+        except Exception as e:  # noqa: BLE001
+            return JSONResponse({"ok": False, "message": str(e)}, status_code=400)
+        return {"ok": True, "path": str(target)}
+
+    @app.get("/api/drives")
+    def drives():
+        """스캔 루트로 고를 수 있는 물리 볼륨 목록 [{path, label}]."""
+        return {"drives": drives_info()}
+
     # ---- 설정 (앱 내부에서 저장/불러오기, 비밀 값은 마스킹) ----
 
     @app.get("/api/settings")
     def get_settings():
         c = cfg()
         o, n, w = c.outputs.obsidian, c.outputs.notion, c.naverworks
-        nw_store = (load_app_settings().get("sources") or {}).get("naverworks") or {}
+        _srcs = load_app_settings().get("sources") or {}
+        nw_store = _srcs.get("naverworks") or {}
+        git_store = _srcs.get("git") or {}
+        md_dir = os.path.expanduser(c.outputs.markdown.dir)
         return {
+            "version": __version__,
             "timezone": c.timezone,
             "include_raw_data": c.include_raw_data,
             "summarizer": {"provider": c.summarizer.provider, "model": c.summarizer.model},
+            "git": {
+                "enabled": c.git.enabled,
+                "scan_all_drives": bool(git_store.get("scan_all_drives", True)),   # 앱 기본: 모든 하드디스크
+                "scan_roots": c.git.scan_roots,
+                "scan_depth": c.git.scan_depth,
+            },
+            "activitywatch": {"enabled": c.activitywatch.enabled, "base_url": c.activitywatch.base_url},
+            "claude": {"enabled": c.claude.enabled},
+            "markdown": {"enabled": c.outputs.markdown.enabled, "dir": md_dir},
+            "paths": {"settings_file": str(app_settings_path()), "save_dir": md_dir},
             "obsidian": {"enabled": o.enabled, "vault_dir": o.vault_dir, "subdir": o.subdir},
             "notion": {
                 "enabled": n.enabled, "parent_type": n.parent_type, "parent_id": n.parent_id,
@@ -212,6 +282,12 @@ def create_app(config_path: str | None = None) -> "FastAPI":
             }
 
         outs = store.setdefault("outputs", {})
+        md = body.get("markdown")
+        if isinstance(md, dict):
+            mstore = outs.setdefault("markdown", {})
+            mstore["enabled"] = bool(md.get("enabled", True))
+            if md.get("dir"):          # 빈 값이면 기본(문서 폴더) 경로 유지
+                mstore["dir"] = md["dir"]
         ob = body.get("obsidian")
         if isinstance(ob, dict):
             outs.setdefault("obsidian", {}).update({
@@ -234,6 +310,30 @@ def create_app(config_path: str | None = None) -> "FastAPI":
                 target["token"] = no["token"]
 
         srcs = store.setdefault("sources", {})
+        gt = body.get("git")
+        if isinstance(gt, dict):
+            try:
+                depth = int(gt.get("scan_depth", 5))
+            except (TypeError, ValueError):
+                depth = 5
+            depth = max(1, min(depth, 12))   # 폭주 방지(1~12단계)
+            g = srcs.setdefault("git", {})
+            g["enabled"] = bool(gt.get("enabled", True))
+            g["scan_all_drives"] = bool(gt.get("scan_all_drives", True))
+            g["scan_roots"] = gt.get("scan_roots") or []
+            g["scan_depth"] = depth
+            g["author"] = ""                # 앱: 작성자 필터 없음(내 커밋으로 간주)
+            g["include_claude_cwds"] = True  # 앱: Claude 작업 폴더 항상 자동 포함
+            # repos 는 앱에서 관리하지 않음 → 기존 값(config/CLI) 보존
+        aw = body.get("activitywatch")
+        if isinstance(aw, dict):
+            srcs.setdefault("activitywatch", {}).update({
+                "enabled": bool(aw.get("enabled", True)),
+                "base_url": aw.get("base_url", "http://localhost:5600"),
+            })
+        cl = body.get("claude")
+        if isinstance(cl, dict):
+            srcs.setdefault("claude", {})["enabled"] = bool(cl.get("enabled", True))
         nw = body.get("naverworks")
         if isinstance(nw, dict):
             target = srcs.setdefault("naverworks", {})

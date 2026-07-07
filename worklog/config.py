@@ -41,7 +41,8 @@ class GitConfig:
     enabled: bool = True
     repos: list[str] = field(default_factory=list)
     scan_roots: list[str] = field(default_factory=list)
-    scan_depth: int = 2
+    scan_all_drives: bool = False   # True 면 scan_roots 대신 모든 고정 디스크를 스캔
+    scan_depth: int = 5
     author: str = ""
     include_claude_cwds: bool = True
 

@@ -90,6 +90,87 @@ def test_no_repos_skips():
     assert res.skipped
 
 
+def test_scan_helpers_multiroot_depth_and_identity(tmp_path):
+    """스캔 헬퍼: 여러 루트 병렬 탐색 + 깊이 제한 + git 식별/중복 제거."""
+    import os
+
+    from worklog.collectors.git_repos import _identify_many, _scan_many
+
+    a = tmp_path / "A" / "repoA"
+    b = tmp_path / "B" / "repoB"
+    for d in (a, b):
+        d.mkdir(parents=True)
+        _git(d, "init", "-q")
+
+    # 여러 루트를 병렬 탐색 → 둘 다 발견
+    paths = _scan_many([str(tmp_path / "A"), str(tmp_path / "B")], depth=3)
+    assert {os.path.basename(p) for p in paths} == {"repoA", "repoB"}
+
+    # 깊이 1 은 두 단계 아래 저장소를 못 찾는다
+    assert _scan_many([str(tmp_path)], depth=1) == []
+
+    # 식별: 같은 경로를 중복 줘도 git-common-dir 로 하나로 합쳐진다
+    idents = _identify_many([str(a), str(a)])
+    assert len({canonical for _, canonical, _ in idents}) == 1
+
+
+def test_git_collector_scan_roots_parallel(tmp_path):
+    """scan_roots 아래 여러 저장소를 병렬 식별·로그하여 커밋을 모은다."""
+    import os
+
+    tz = get_tz("Asia/Seoul")
+    today = datetime.now(tz)
+    iso = today.replace(microsecond=0).isoformat()
+    env = dict(os.environ, GIT_AUTHOR_DATE=iso, GIT_COMMITTER_DATE=iso)
+
+    root = tmp_path / "roots"
+    expected = set()
+    for i in range(3):
+        r = root / f"grp{i}" / f"repo{i}"
+        r.mkdir(parents=True)
+        _git(r, "init", "-q")
+        _git(r, "config", "user.email", "me@x")
+        _git(r, "config", "user.name", "Me")
+        (r / "f.txt").write_text("a\n", encoding="utf-8")
+        _git(r, "add", "f.txt")
+        subprocess.run(["git", "-C", str(r), "commit", "-q", "-m", f"feat: c{i}"],
+                       check=True, capture_output=True, text=True, env=env)
+        expected.add(f"repo{i}")
+
+    res = GitCollector(GitConfig(repos=[], scan_roots=[str(root)], scan_depth=5)).collect(_ctx(today.date()))
+    assert res.ok
+    assert {c.repo for c in res.data.commits} == expected
+    assert len(res.data.commits) == 3
+
+
+def test_git_scan_all_drives_uses_fixed_drives(tmp_path, monkeypatch):
+    """scan_all_drives=True 면 scan_roots 대신 fixed_drives() 아래를 스캔한다."""
+    import os
+
+    tz = get_tz("Asia/Seoul")
+    today = datetime.now(tz)
+    iso = today.replace(microsecond=0).isoformat()
+    env = dict(os.environ, GIT_AUTHOR_DATE=iso, GIT_COMMITTER_DATE=iso)
+
+    repo = tmp_path / "drive" / "repoZ"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "me@x")
+    _git(repo, "config", "user.name", "Me")
+    (repo / "f.txt").write_text("a\n", encoding="utf-8")
+    _git(repo, "add", "f.txt")
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "feat: z"],
+                   check=True, capture_output=True, text=True, env=env)
+
+    # 실제 하드디스크 대신 임시 폴더를 '드라이브'로 대체 (collector 는 호출 시점에 import)
+    monkeypatch.setattr("worklog.util.fixed_drives", lambda: [str(tmp_path / "drive")])
+
+    cfg = GitConfig(repos=[], scan_roots=[], scan_all_drives=True, scan_depth=3)
+    res = GitCollector(cfg).collect(_ctx(today.date()))
+    assert res.ok
+    assert {c.repo for c in res.data.commits} == {"repoZ"}
+
+
 def test_disambiguates_same_named_repos(tmp_path):
     """다른 경로의 동명 저장소는 상위 폴더로 구분되어야 한다."""
     from datetime import datetime, timezone
