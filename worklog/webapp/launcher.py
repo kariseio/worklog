@@ -146,7 +146,10 @@ def run_app(config_path: str | None = None) -> int:
     try:
         import webview
 
-        window = webview.create_window("업무일지", url, width=960, height=780, min_size=(780, 560))
+        # text_select=True: 본문(요약·표·타임라인)을 마우스로 선택·복사할 수 있게.
+        # (pywebview 기본값 False 는 body 전체 선택을 막아 문서 뷰에 부적절)
+        window = webview.create_window("업무일지", url, width=960, height=780,
+                                       min_size=(780, 560), text_select=True)
         used_gui = True
     except ImportError:
         pass

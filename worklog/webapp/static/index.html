@@ -60,6 +60,9 @@
   .md-table{border-collapse:collapse;margin:8px 0;font-size:12.5px}
   .md-table th,.md-table td{border:1px solid var(--border);padding:4px 9px;text-align:left}
   .md-table th{background:var(--surface-2);font-weight:600}
+  /* 본문(요약·표·타임라인·근거)만 선택 가능, UI 크롬은 선택 방지 */
+  header,.toolbar,.side,.savebar,button,.chip,.kpi .l{user-select:none;-webkit-user-select:none}
+  .md,#analysis,.ev,.hl{user-select:text;-webkit-user-select:text}
   .actions{display:flex;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border);flex-wrap:wrap}
   .chips{display:flex;flex-wrap:wrap;gap:7px;margin:14px 0 10px}
   .chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--border);color:var(--text-2)}
