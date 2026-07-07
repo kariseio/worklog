@@ -1,9 +1,10 @@
 # releases
 
-버전별 단일 실행파일(.exe) 보관 폴더.
+단일 실행파일(.exe) 보관 폴더.
 
-- 파일명: `worklog-<버전>.exe` (예: `worklog-0.1.0.exe`)
-- `build_exe.bat` 를 실행하면 빌드 후 `pyproject.toml` 의 버전으로 이 폴더에 **자동 복사**된다.
+- **`worklog.exe`** = **항상 최신 버전** (빌드할 때마다 최신 빌드로 덮어씀). 평소엔 이걸 실행하면 된다.
+- `worklog-<버전>.exe` = 버전별 보관본 (예: `worklog-0.1.2.exe`). 특정 버전으로 되돌릴 때.
+- `build_exe.bat` 를 실행하면 빌드 후 `worklog-<버전>.exe`(버전별) 와 `worklog.exe`(최신) 둘 다에 **자동 복사**된다.
 - `.exe` 바이너리는 용량 때문에 git 에 커밋하지 않는다(`.gitignore` 에서 `releases/*.exe` 제외).
   원격 배포는 태그(`vX.Y.Z`)에 맞춰 **GitHub Releases** 에 첨부하는 방식을 권장.
 
