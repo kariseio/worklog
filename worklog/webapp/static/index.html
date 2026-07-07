@@ -57,6 +57,9 @@
   .md p{margin:8px 0}
   .md code{font-family:var(--mono);font-size:12.5px;background:var(--surface-2);padding:1px 5px;border-radius:5px}
   .md strong{font-weight:600}
+  .md-table{border-collapse:collapse;margin:8px 0;font-size:12.5px}
+  .md-table th,.md-table td{border:1px solid var(--border);padding:4px 9px;text-align:left}
+  .md-table th{background:var(--surface-2);font-weight:600}
   .actions{display:flex;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border);flex-wrap:wrap}
   .chips{display:flex;flex-wrap:wrap;gap:7px;margin:14px 0 10px}
   .chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--border);color:var(--text-2)}
@@ -263,6 +266,12 @@
       if(/^##\s+/.test(t)){ closeList(); html+="<h2>"+inline(t.replace(/^##\s+/,""))+"</h2>"; continue; }
       if(/^#\s+/.test(t)){ closeList(); html+="<h2>"+inline(t.replace(/^#\s+/,""))+"</h2>"; continue; }
       if(/^---/.test(t)){ closeList(); html+="<hr style='border:none;border-top:1px solid var(--border);margin:12px 0'>"; continue; }
+      if(t.charAt(0)==="|" && i+1<lines.length && _isSep(lines[i+1])){   // GFM 테이블
+        closeList();
+        var _hdr=_row(t), _al=_aligns(lines[i+1]), _rows=[], _j=i+2;
+        while(_j<lines.length && lines[_j].replace(/^\s+/,"").charAt(0)==="|"){ _rows.push(_row(lines[_j])); _j++; }
+        html+=_table(_hdr,_al,_rows); i=_j-1; continue;
+      }
       if(/^[-*]\s+/.test(t)){ if(!inList){ html+="<ul>"; inList=true; } html+="<li>"+inline(t.replace(/^[-*]\s+/,""))+"</li>"; continue; }
       closeList(); html+="<p>"+inline(t)+"</p>";
     }
@@ -274,6 +283,15 @@
     s = s.replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>");
     s = s.replace(/`([^`]+?)`/g,"<code>$1</code>");
     return s;
+  }
+  function _row(line){ var s=line.trim().replace(/^\|/,"").replace(/\|$/,""); return s.split("|").map(function(c){return c.trim();}); }
+  function _isSep(line){ var s=line.trim(); return s.indexOf("-")>=0 && /^\|?[\s:|\-]+\|?$/.test(s); }
+  function _aligns(line){ return _row(line).map(function(sp){ var l=sp.charAt(0)===":", r=sp.charAt(sp.length-1)===":"; return (l&&r)?"center":(r?"right":(l?"left":"")); }); }
+  function _table(header, aligns, rows){
+    function al(k){ return aligns[k]?(' style="text-align:'+aligns[k]+'"'):""; }
+    var h='<table class="md-table"><thead><tr>'+header.map(function(c,k){return "<th"+al(k)+">"+inline(c)+"</th>";}).join("")+"</tr></thead><tbody>";
+    h+=rows.map(function(r){return "<tr>"+r.map(function(c,k){return "<td"+al(k)+">"+inline(c)+"</td>";}).join("")+"</tr>";}).join("");
+    return h+"</tbody></table>";
   }
 
   function setDateInput(d){ $("date").value = d; }
