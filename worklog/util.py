@@ -20,6 +20,55 @@ log = logging.getLogger("worklog")
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
+def drives_info() -> list[dict]:
+    """물리 볼륨만 [{'path': 'C:\\\\', 'label': 'SSD1TB'}, ...] 로 반환.
+
+    Windows: DRIVE_FIXED(3) 중, 심볼릭 링크가 실제 물리 볼륨(\\Device\\HarddiskVolumeN)을
+    가리키는 것만. 가상/클라우드 드라이브(예: PantaVDisk, Dokan/WinFsp 계열)는 제외한다.
+    실패(예외) 시 존재하는 고정 드라이브 전부(레이블 없이). 그 외 OS: [{'path':'/','label':''}].
+    """
+    if os.name != "nt":
+        return [{"path": "/", "label": ""}]
+    import string
+
+    letters = string.ascii_uppercase
+    try:
+        import ctypes
+        from ctypes import create_unicode_buffer
+
+        k32 = ctypes.windll.kernel32
+        old_mode = k32.SetErrorMode(0x0001)   # SEM_FAILCRITICALERRORS: 미디어 없음 대화상자 억제
+        try:
+            out: list[dict] = []
+            for c in letters:
+                root = f"{c}:\\"
+                try:
+                    if k32.GetDriveTypeW(root) != 3:          # DRIVE_FIXED 만
+                        continue
+                    dev = create_unicode_buffer(1024)
+                    if not k32.QueryDosDeviceW(f"{c}:", dev, 1024):
+                        continue
+                    if not dev.value.startswith("\\Device\\HarddiskVolume"):  # 가상/클라우드 제외
+                        continue
+                    name = create_unicode_buffer(261)
+                    ok = k32.GetVolumeInformationW(root, name, 261, None, None, None, None, 0)
+                    out.append({"path": root, "label": name.value if ok else ""})
+                except Exception:  # noqa: BLE001  개별 드라이브 실패는 건너뜀
+                    continue
+            if out:
+                return out
+        finally:
+            k32.SetErrorMode(old_mode)
+    except Exception:  # noqa: BLE001
+        pass
+    return [{"path": f"{c}:\\", "label": ""} for c in letters if os.path.exists(f"{c}:\\")]
+
+
+def fixed_drives() -> list[str]:
+    """물리 볼륨 루트 경로 목록. 예: ['C:\\\\', 'D:\\\\']. (drives_info 의 path 만)"""
+    return [d["path"] for d in drives_info()]
+
+
 @functools.lru_cache(maxsize=512)
 def git_common_dir(path: str) -> str | None:
     """path 가 속한 git 저장소의 공용 .git 경로(realpath)를 반환.

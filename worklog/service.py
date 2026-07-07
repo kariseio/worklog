@@ -103,41 +103,63 @@ def collect(cfg: Config, ctx: CollectContext, sources: set[str]) -> tuple[DailyD
     statuses: dict[str, SourceStatus] = {
         n: SourceStatus(name=n, state="disabled") for n in ALL_SOURCES
     }
+    counters = {
+        "claude": lambda d: d.total_sessions if d else 0,
+        "git": lambda d: len(d.commits) if d else 0,
+        "activitywatch": lambda d: len(d.by_app) if d else 0,
+        "naverworks": lambda d: len(d.events) if d else 0,
+    }
 
-    # 1) Claude 로그 (git 자동탐색에 cwd 를 넘겨주기 위해 먼저)
+    def _assign(name: str, res) -> None:
+        _apply_warnings(name, res, data)
+        statuses[name] = _status(name, res, counters[name])
+
+    # 1) Claude 로그 먼저 (git 자동탐색에 cwd 를 넘겨줘야 하므로 순서 고정)
     claude_cwds: list[str] = []
     if "claude" in sources:
-        res = _run(ClaudeLogCollector(cfg.claude), ctx, data)
-        statuses["claude"] = _status("claude", res, lambda d: d.total_sessions if d else 0)
+        res = _safe_collect(ClaudeLogCollector(cfg.claude), ctx)
+        _assign("claude", res)
         if isinstance(res.data, ClaudeData):
             data.claude = res.data
             claude_cwds = res.data.cwds
 
-    # 2) Git
+    # 2) git · activitywatch · naverworks 는 서로 독립 → 병렬 실행
+    #    (느린 git 이 네트워크 붙는 aw/naverworks 와 시간상 겹쳐 돈다)
+    parallel: list[tuple[str, object]] = []
     if "git" in sources:
-        res = _run(GitCollector(cfg.git, extra_repos=claude_cwds), ctx, data)
-        statuses["git"] = _status("git", res, lambda d: len(d.commits) if d else 0)
-        if isinstance(res.data, GitData):
-            data.git = res.data
-
-    # 3) ActivityWatch
+        parallel.append(("git", GitCollector(cfg.git, extra_repos=claude_cwds)))
     if "activitywatch" in sources:
-        res = _run(ActivityWatchCollector(cfg.activitywatch), ctx, data)
-        statuses["activitywatch"] = _status("activitywatch", res, lambda d: len(d.by_app) if d else 0)
-        if isinstance(res.data, ActivityWatchData):
-            data.activitywatch = res.data
-
-    # 4) NaverWorks 캘린더
+        parallel.append(("activitywatch", ActivityWatchCollector(cfg.activitywatch)))
     if "naverworks" in sources:
-        res = _run(NaverWorksCollector(cfg.naverworks), ctx, data)
-        statuses["naverworks"] = _status("naverworks", res, lambda d: len(d.events) if d else 0)
-        if isinstance(res.data, CalendarData):
+        parallel.append(("naverworks", NaverWorksCollector(cfg.naverworks)))
+
+    for name, res in _collect_parallel(parallel, ctx):
+        _assign(name, res)
+        if name == "git" and isinstance(res.data, GitData):
+            data.git = res.data
+        elif name == "activitywatch" and isinstance(res.data, ActivityWatchData):
+            data.activitywatch = res.data
+        elif name == "naverworks" and isinstance(res.data, CalendarData):
             data.calendar = res.data
 
     disambiguate_repo_names(data)
 
     order = ["git", "claude", "activitywatch", "naverworks"]
     return data, [statuses[n] for n in order]
+
+
+def _collect_parallel(items: list[tuple[str, object]], ctx: CollectContext):
+    """(이름, 수집기) 들을 병렬 실행하고 (이름, 결과) 를 입력 순서대로 돌려준다."""
+    if not items:
+        return []
+    if len(items) == 1:
+        name, collector = items[0]
+        return [(name, _safe_collect(collector, ctx))]
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=len(items)) as ex:
+        results = list(ex.map(lambda it: _safe_collect(it[1], ctx), items))
+    return [(items[i][0], results[i]) for i in range(len(items))]
 
 
 def disambiguate_repo_names(data: DailyData) -> None:
@@ -202,23 +224,25 @@ def disambiguate_repo_names(data: DailyData) -> None:
                 s.project = newname[k]
 
 
-def _run(collector, ctx: CollectContext, data: DailyData):
+def _safe_collect(collector, ctx: CollectContext):
+    """수집기를 실행하되 예외를 삼켜 항상 CollectorResult 를 돌려준다(스레드 안전, data 미접근)."""
     from .collectors.base import CollectorResult
 
     try:
-        result = collector.collect(ctx)
+        return collector.collect(ctx)
     except Exception as e:  # noqa: BLE001
         log.warning("[%s] 예외: %s", collector.name, e)
-        data.warnings.append(f"[{collector.name}] 예외: {e}")
         return CollectorResult.fail(collector.name, f"예외: {e}")
 
+
+def _apply_warnings(name: str, result, data: DailyData) -> None:
+    """수집 결과의 경고/건너뜀을 data 에 반영·로깅한다(메인 스레드에서 호출)."""
     for w in result.warnings:
-        log.warning("[%s] %s", collector.name, w)
-        data.warnings.append(f"[{collector.name}] {w}")
+        log.warning("[%s] %s", name, w)
+        data.warnings.append(f"[{name}] {w}")
     if result.skipped:
-        log.info("[%s] 건너뜀: %s", collector.name, result.skip_reason)
-        data.warnings.append(f"[{collector.name}] 건너뜀: {result.skip_reason}")
-    return result
+        log.info("[%s] 건너뜀: %s", name, result.skip_reason)
+        data.warnings.append(f"[{name}] 건너뜀: {result.skip_reason}")
 
 
 def _status(name: str, result, counter) -> SourceStatus:

@@ -29,7 +29,7 @@ sources:
     scan_roots:
       # - D:\works
       # - D:\study
-    scan_depth: 2
+    scan_depth: 5                      # scan_roots 아래 몇 단계까지 내려가며 저장소를 찾을지
     author: ""                        # 비우면 모든 작성자. 본인 것만 보려면 이름/이메일 지정.
     # Claude Code 로그에서 그날 작업한 프로젝트(cwd)를 자동으로 git 대상에 추가할지.
     include_claude_cwds: true
