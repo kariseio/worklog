@@ -16,12 +16,14 @@ uv run pyinstaller --noconfirm --onefile --windowed --name worklog ^
   --exclude-module pytest ^
   app_main.py
 
-REM 버전별 releases 폴더에 자동 복사 (worklog-<버전>.exe)
+REM releases 폴더에 복사: 버전별 보관(worklog-<버전>.exe) + 최신(worklog.exe)
 for /f %%v in ('uv run python -c "import worklog;print(worklog.__version__)"') do set VER=%%v
 if not exist releases mkdir releases
 copy /y dist\worklog.exe "releases\worklog-%VER%.exe" >nul
+copy /y dist\worklog.exe "releases\worklog.exe" >nul
 
 echo.
 echo [worklog] done -^> dist\worklog.exe
 echo [worklog] archived -^> releases\worklog-%VER%.exe
+echo [worklog] latest   -^> releases\worklog.exe
 pause
