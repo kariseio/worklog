@@ -24,3 +24,6 @@ build/
 
 # 머신 종속(프리뷰 런처 등)
 .claude/
+
+# 버전별 exe 보관 폴더 — 바이너리는 git 에 안 올림(용량). 폴더/README 는 추적.
+releases/*.exe
