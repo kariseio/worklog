@@ -168,8 +168,6 @@ def render_analysis(analysis) -> str:
             chg = f"+{p.insertions:,}/−{p.deletions:,}" if p.commits else "–"
             lines.append(f"| {p.project} | {dur} | {p.sessions} | {p.files} | {p.commits} | {chg} |")
         lines.append("")
-        lines.append("> 집중시간은 세션 첫~마지막 활동 구간 합산 추정치이고, 변경량(±라인)은 노력과 비례하지 않을 수 있습니다.")
-        lines.append("")
 
     if analysis.timeline:
         lines.append("## 🕐 타임라인")
@@ -222,8 +220,10 @@ WORKLOG_SENTINEL = "__WORKLOG_GENERATOR_AUTOSUMMARY__"
 _META_SIGS = (
     "개발자의 하루 활동 로그",          # v1
     "하루치 개발 활동 데이터를",        # v2·v3 (system 프롬프트 시작부)
+    "하루치 개발 활동 로그",            # v4 (세션 질답 반영)
+    "질답 흐름'을 요약하는 도구",       # v4 (세션별 압축용 system)
     "업무일지'로 압축하는 도구",        # v2
-    "업무일지'로 문서화하는 도구",      # v3
+    "업무일지'로 문서화하는 도구",      # v3·v4
     "업무일지를 작성",
     "업무일지 본문을 작성",
     "업무일지 본문만 출력",
@@ -290,3 +290,50 @@ def render_work_signal(data: DailyData, tz, header: str = "") -> str:
 
     body = "\n".join(lines).strip()
     return (body + "\n") if body else ""
+
+
+def render_session_blocks(data, tz, max_files: int = 8) -> list[tuple[str, str]]:
+    """요약(단일/맵리듀스)용: 비-meta 세션마다 (라벨, 질답 블록) 리스트.
+
+    각 블록 = 세션 제목 + 시간대 + 질답 흐름('시:분 Q: … → A: …') + 수정 파일.
+    이게 '이 얘기 저 얘기'(세션 내 여러 주제)를 요약기에 전달하는 핵심 신호다.
+    """
+    blocks: list[tuple[str, str]] = []
+    if not (data.claude and data.claude.sessions):
+        return blocks
+    for s in data.claude.sessions:
+        if _is_meta_session(s):
+            continue
+        proj = s.project or "?"
+        title = (s.title or "").strip() or (s.intent or "").strip()[:60] or "(제목 없음)"
+        span = f" {fmt_time(s.first_ts, tz)}–{fmt_time(s.last_ts, tz)}" if (s.first_ts and s.last_ts) else ""
+        lines = [f"### [{proj}] {title}{span}"]
+        if s.qa:
+            for turn in s.qa:
+                q = " ".join((turn.question or "").split())
+                a = " ".join((turn.answer or "").split())
+                seg = f"- {turn.time} Q: {q}" if turn.time else f"- Q: {q}"
+                if a:
+                    seg += f" → A: {a}"
+                lines.append(seg)
+            if s.qa_dropped:
+                lines.append(f"- (이후 질답 {s.qa_dropped}개 생략)")
+        elif s.intent:
+            lines.append(f"- 요청: {s.intent}")
+        if s.files_edited:
+            shown = s.files_edited[:max_files]
+            more = f" 외 {len(s.files_edited) - len(shown)}개" if len(s.files_edited) > len(shown) else ""
+            lines.append("- 수정: " + ", ".join(_base(p) for p in shown) + more)
+        blocks.append((f"[{proj}] {title}", "\n".join(lines)))
+    return blocks
+
+
+def render_session_section(blocks) -> str:
+    """render_session_blocks 결과를 요약 신호에 붙일 '세션 질답 흐름' 섹션 문자열로.
+
+    머리글은 summarize.SESSION_SECTION_HEADER 와 일치해야 한다(map-reduce 시 파싱 기준).
+    """
+    body = "\n\n".join(b for _, b in blocks if b and b.strip())
+    if not body:
+        return ""
+    return "## Claude Code 세션 (질답 흐름)\n" + body + "\n"

@@ -18,7 +18,7 @@ import json
 import os
 
 from ..config import ClaudeConfig
-from ..models import ClaudeData, ClaudeSession
+from ..models import ClaudeData, ClaudeSession, QATurn
 from ..util import parse_iso
 from .base import CollectContext, Collector, CollectorResult
 
@@ -105,6 +105,21 @@ class ClaudeLogCollector(Collector):
         files_edited: set[str] = set()
         files_read: set[str] = set()
 
+        # 질답 흐름: 사용자 프롬프트를 '질문'으로, 다음 프롬프트 전까지의 어시스턴트
+        # 프로즈를 '답 요지'로 묶는다.
+        qa_turns: list[QATurn] = []
+        cur_qa: dict | None = None
+
+        def _flush_qa():
+            nonlocal cur_qa
+            if cur_qa is not None:
+                ans = " ".join(" ".join(cur_qa["a"]).split())   # 프로즈 합치고 공백 정리
+                qa_turns.append(QATurn(
+                    time=cur_qa["time"], question=cur_qa["q"],
+                    answer=ans[: self.cfg.max_answer_len],
+                ))
+                cur_qa = None
+
         for o in recs:
             t = o.get("type")
             if o.get("sessionId") and not s.session_id:
@@ -130,14 +145,23 @@ class ClaudeLogCollector(Collector):
 
             if t == "user":
                 txt = _real_user_text(o)
-                if txt and not s.intent:
-                    s.intent = txt[: self.cfg.max_intent_len]
+                if txt:
+                    _flush_qa()
+                    hm = ts.astimezone(tz).strftime("%H:%M") if ts else ""
+                    cur_qa = {"time": hm, "q": txt[: self.cfg.max_intent_len], "a": []}
+                    if not s.intent:
+                        s.intent = txt[: self.cfg.max_intent_len]
             elif t == "assistant":
                 msg = o.get("message", {}) or {}
                 usage = msg.get("usage", {}) or {}
                 s.output_tokens += int(usage.get("output_tokens", 0) or 0)
                 for b in msg.get("content", []) or []:
-                    if not isinstance(b, dict) or b.get("type") != "tool_use":
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "text" and b.get("text") and cur_qa is not None:
+                        cur_qa["a"].append(b["text"])   # '답' 요지용 프로즈
+                        continue
+                    if b.get("type") != "tool_use":
                         continue
                     nm = b.get("name") or "?"
                     inp = b.get("input", {}) or {}
@@ -152,6 +176,12 @@ class ClaudeLogCollector(Collector):
                 snap = o.get("snapshot", {}) or {}
                 for p in (snap.get("trackedFileBackups") or {}):
                     files_edited.add(p)
+
+        _flush_qa()
+        if len(qa_turns) > self.cfg.max_qa_turns:
+            s.qa_dropped = len(qa_turns) - self.cfg.max_qa_turns
+            qa_turns = qa_turns[: self.cfg.max_qa_turns]
+        s.qa = qa_turns
 
         s.files_edited = sorted(files_edited)
         if self.cfg.include_read:

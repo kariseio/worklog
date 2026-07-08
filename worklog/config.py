@@ -53,6 +53,8 @@ class ClaudeConfig:
     projects_dir: str = ""   # 빈 값이면 ~/.claude/projects
     include_read: bool = False
     max_intent_len: int = 300
+    max_qa_turns: int = 120       # 세션당 수집할 질답 상한(초과분은 생략 표기; 볼륨은 map-reduce가 처리)
+    max_answer_len: int = 180     # 질답의 '답' 요지 최대 길이
 
 
 @dataclass
@@ -76,6 +78,9 @@ class SummarizerConfig:
     model: str = "claude-opus-4-8"
     language: str = "ko"
     max_tokens: int = 4000
+    # 세션 질답 총량이 이 글자수를 넘으면 단일 호출 대신 map-reduce(세션별 요약→종합)로.
+    map_reduce_chars: int = 20000
+    map_workers: int = 4         # 세션별 요약 병렬 수(claude CLI 동시 호출 상한)
 
 
 def documents_dir() -> str:

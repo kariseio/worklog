@@ -74,6 +74,15 @@ class GitData:
 
 
 @dataclass
+class QATurn:
+    """세션 안의 한 '질답' — 사용자 질문 + 그에 대한 어시스턴트 응답 요지."""
+
+    time: str          # 로컬 시:분 (예: "14:03")
+    question: str      # 사용자 프롬프트(정제·절삭)
+    answer: str = ""   # 어시스턴트 응답 요지(프로즈 앞부분, 절삭)
+
+
+@dataclass
 class ClaudeSession:
     session_id: str | None
     project: str | None            # cwd 의 basename (표시용)
@@ -88,6 +97,8 @@ class ClaudeSession:
     output_tokens: int = 0
     first_ts: datetime | None = None
     last_ts: datetime | None = None
+    qa: list[QATurn] = field(default_factory=list)   # 세션 내 질답 흐름(시간순)
+    qa_dropped: int = 0                              # 상한 초과로 생략된 질답 수
 
 
 @dataclass

@@ -36,10 +36,12 @@ from .analyze import analyze
 from .render import (
     render_analysis,
     render_facts,
+    render_session_blocks,
+    render_session_section,
     render_timeline_for_llm,
     render_work_signal,
 )
-from .summarize import summarize
+from .summarize import summarize_day
 from .util import get_tz, human_duration, resolve_day
 
 log = logging.getLogger("worklog")
@@ -304,7 +306,8 @@ def compose_full(target: date, summary: str | None, facts: str,
 
 
 def summarize_signal(cfg: Config, signal: str, target: date, availability: str = "") -> str | None:
-    return summarize(signal, target.isoformat(), cfg.summarizer, availability)
+    # 신호에 세션 질답 섹션이 있으면 summarize_day 가 필요시 map-reduce 로 안전 처리.
+    return summarize_day(signal, target.isoformat(), cfg.summarizer, availability)
 
 
 def generate(cfg: Config, date_str: str | None = None,
@@ -320,6 +323,9 @@ def generate(cfg: Config, date_str: str | None = None,
     timeline_text = render_timeline_for_llm(an)
     if timeline_text:
         signal = signal + "\n" + timeline_text
+    session_section = render_session_section(render_session_blocks(data, tz))
+    if session_section:
+        signal = signal.rstrip() + "\n\n" + session_section
 
     summary = None
     if not no_llm and not data.is_empty():

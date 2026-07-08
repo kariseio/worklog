@@ -158,6 +158,8 @@ def create_app(config_path: str | None = None) -> "FastAPI":
         from ..render import (
             render_analysis,
             render_facts,
+            render_session_blocks,
+            render_session_section,
             render_timeline_for_llm,
             render_work_signal,
         )
@@ -176,6 +178,9 @@ def create_app(config_path: str | None = None) -> "FastAPI":
         tl = render_timeline_for_llm(an)
         if tl:
             signal = signal + "\n" + tl
+        session_section = render_session_section(render_session_blocks(data, tz))
+        if session_section:
+            signal = signal.rstrip() + "\n\n" + session_section
         return {
             "date": target.isoformat(),
             "facts_markdown": facts,
