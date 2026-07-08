@@ -1,6 +1,6 @@
 [project]
 name = "worklog-generator"
-version = "0.1.6"
+version = "0.1.7"
 description = "ActivityWatch + Git + Claude Code 로그 + NaverWorks 캘린더를 종합해 업무일지를 만드는 생성기"
 readme = "README.md"
 requires-python = ">=3.10"
