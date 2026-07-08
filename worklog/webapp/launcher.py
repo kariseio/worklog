@@ -120,6 +120,13 @@ def run_app(config_path: str | None = None) -> int:
         _focus_existing()
         return 0
 
+    # 이전 실행에서 남은 onefile 임시 추출폴더(%TEMP%\\_MEIxxxxxx) 정리 — 비차단·best-effort.
+    try:
+        from ..update import cleanup_stale_extractions
+        threading.Thread(target=cleanup_stale_extractions, daemon=True).start()
+    except Exception:  # noqa: BLE001
+        pass
+
     from .server import create_app, set_show_callback
 
     app = create_app(config_path)

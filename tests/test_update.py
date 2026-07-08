@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from worklog import update
@@ -82,3 +84,39 @@ def test_check_network_error_is_captured(monkeypatch):
     r = update.check()
     assert r["update_available"] is False
     assert "no net" in (r["error"] or "")
+
+
+def test_updater_bat_has_no_relaunch():
+    # 재실행(start) 제거 확인 — 재실행 레이스가 DLL 로드 에러를 유발하므로 교체만 한다.
+    assert "start" not in update._UPDATER_BAT
+    assert "move /y" in update._UPDATER_BAT
+
+
+def test_cleanup_noop_when_not_frozen(monkeypatch):
+    monkeypatch.setattr(update, "is_frozen", lambda: False)
+    assert update.cleanup_stale_extractions() == 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="onefile 추출폴더 청소는 Windows 전용")
+def test_cleanup_removes_only_signed_stale_dirs(monkeypatch, tmp_path):
+    monkeypatch.setattr(update, "is_frozen", lambda: True)
+    monkeypatch.setattr(update.tempfile, "gettempdir", lambda: str(tmp_path))
+    # 현재 실행 중인 폴더로 위장(보존돼야 함)
+    mine = tmp_path / "_MEI_current"
+    (mine / "worklog" / "webapp" / "static").mkdir(parents=True)
+    monkeypatch.setattr(update.sys, "_MEIPASS", str(mine), raising=False)
+    # worklog 서명이 있는 누출 폴더(지워져야 함)
+    stale = tmp_path / "_MEI999999"
+    (stale / "worklog" / "webapp" / "static").mkdir(parents=True)
+    # 서명 없는 타 앱 폴더(보존)와 _MEI 아닌 폴더(무시)
+    other = tmp_path / "_MEI888888"
+    (other / "other_app").mkdir(parents=True)
+    notmei = tmp_path / "randomdir"
+    notmei.mkdir()
+
+    removed = update.cleanup_stale_extractions()
+    assert removed == 1
+    assert not stale.exists()   # 지워짐
+    assert mine.exists()        # 현재 폴더 보존
+    assert other.exists()       # 서명 없어 보존(타 앱 보호)
+    assert notmei.exists()

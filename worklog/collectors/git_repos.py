@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ..config import GitConfig
 from ..models import GitCommit, GitData
-from ..util import CREATE_NO_WINDOW, git_common_dir, parse_iso, repo_root_of
+from ..util import git_common_dir, no_window_kwargs, parse_iso, repo_root_of
 from .base import CollectContext, Collector, CollectorResult
 
 # git log 파서용 구분자
@@ -154,7 +154,7 @@ class GitCollector(Collector):
 
         out = subprocess.run(
             cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            creationflags=CREATE_NO_WINDOW,
+            **no_window_kwargs(),
         )
         if out.returncode != 0:
             raise RuntimeError((out.stderr or "").strip() or f"exit {out.returncode}")

@@ -20,6 +20,21 @@ log = logging.getLogger("worklog")
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
+def no_window_kwargs() -> dict:
+    """콘솔 프로그램(git.EXE, claude.CMD 등)을 subprocess 로 띄울 때 콘솔창이
+    깜빡이지 않게 하는 kwargs 를 돌려준다(Windows 전용, 그 외 OS 는 빈 dict).
+
+    CREATE_NO_WINDOW 만으로는 `.cmd`/`.bat` 셔임(예: npm 전역설치된 claude.CMD)이
+    콘솔창을 잠깐 띄우는 경우가 있어, STARTUPINFO(SW_HIDE)를 함께 준다.
+    """
+    if os.name != "nt":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    return {"creationflags": CREATE_NO_WINDOW, "startupinfo": si}
+
+
 def drives_info() -> list[dict]:
     """물리 볼륨만 [{'path': 'C:\\\\', 'label': 'SSD1TB'}, ...] 로 반환.
 
@@ -82,7 +97,7 @@ def git_common_dir(path: str) -> str | None:
         out = subprocess.run(
             ["git", "-C", path, "rev-parse", "--git-common-dir"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-            creationflags=CREATE_NO_WINDOW,
+            **no_window_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return None

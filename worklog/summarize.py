@@ -15,7 +15,7 @@ import shutil
 import subprocess
 
 from .config import SummarizerConfig
-from .util import CREATE_NO_WINDOW
+from .util import no_window_kwargs
 
 log = logging.getLogger("worklog")
 
@@ -108,7 +108,7 @@ def _summarize_cli(prompt: str, cfg: SummarizerConfig) -> str | None:
             encoding="utf-8",
             errors="replace",
             timeout=240,
-            creationflags=CREATE_NO_WINDOW,
+            **no_window_kwargs(),
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         log.warning("claude CLI 요약 실패: %s", e)
