@@ -289,7 +289,10 @@ def create_app(config_path: str | None = None) -> "FastAPI":
             new = update.download_and_stage(info["download_url"])
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"ok": False, "message": f"다운로드 실패: {e}"}, status_code=400)
-        update.schedule_apply_and_restart(new)   # 배치 실행 예약 + 1.5초 뒤 종료
+        try:
+            update.schedule_apply_and_restart(new)   # 배치 실행 예약 + 1.5초 뒤 종료
+        except Exception as e:  # noqa: BLE001
+            return JSONResponse({"ok": False, "message": f"재시작 예약 실패: {e}"}, status_code=400)
         return {"ok": True, "restarting": True, "version": info.get("latest")}
 
     # ---- 설정 (앱 내부에서 저장/불러오기, 비밀 값은 마스킹) ----

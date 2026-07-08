@@ -655,9 +655,9 @@
   }
   $("updnote").onclick=function(){ openSettings(); setTimeout(function(){ selectTab("about"); }, 350); };
   $("s-update-btn").onclick=function(){ var btn=this, st=$("s-update-status"); btn.disabled=true;
-    st.textContent="새 버전 다운로드 중… (잠시만요, 재시작됩니다)"; st.style.color="var(--muted)";
+    st.textContent="새 버전 다운로드 중… 잠시만 기다려 주세요"; st.style.color="var(--muted)";
     post("/api/update/apply",{}).then(function(res){ var b=res.body||{};
-      if(b.ok && b.restarting){ st.textContent="업데이트 완료 · 재시작합니다…"; st.style.color="var(--ok)"; }
+      if(b.ok && b.restarting){ st.textContent="✅ 업데이트 적용됨 · 앱이 닫힙니다. 잠시 후 다시 실행해 주세요."; st.style.color="var(--ok)"; }
       else { st.textContent="실패: "+(b.message||"오류"); st.style.color="var(--danger)"; btn.disabled=false; } })
       .catch(function(e){ st.textContent="오류: "+e.message; st.style.color="var(--danger)"; btn.disabled=false; }); };
 

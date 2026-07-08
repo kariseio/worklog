@@ -26,14 +26,16 @@ log = logging.getLogger("worklog")
 REPO = "kariseio/worklog"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 
-# Windows: 부모 종료 후에도 살아남도록 분리 실행 (DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
-# CREATE_NO_WINDOW 는 DETACHED_PROCESS 와 충돌해 콘솔 도구(tasklist 등)를 망가뜨리므로 넣지 않는다.
+# 배치 실행 플래그: DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — 부모 종료와 무관하게 배치가 살아남아
+# exe 교체(swap)를 끝까지 수행하게 한다.
 _DETACHED = 0x00000008 | 0x00000200 if os.name == "nt" else 0
 
 # tasklist/PID 대신 'exe 잠금이 풀릴 때까지 move 재시도' — 콘솔 없이도 안정적.
 # 현재 exe 가 실행 중이면 move(=덮어쓰기)가 실패해 .new 가 남고, 프로세스가 죽으면 성공한다.
 # 경로는 배치 본문에 넣지 않고 환경변수(WL_NEW/WL_EXE)로 전달 — 한글 경로가 배치 파일
 # 인코딩(cmd 는 OEM 코드페이지로 읽음)에 깨지는 것을 방지. 본문은 순수 ASCII 라 안전.
+# start 재실행은 best-effort — frozen exe 의 Job Object 로 인해 GUI 재시작이 실패할 수 있어
+# UI 에서 '다시 실행하세요'로 안내한다(교체 자체는 확실히 됨).
 _UPDATER_BAT = """@echo off
 for /l %%i in (1,1,40) do (
   ping -n 2 127.0.0.1 >nul
@@ -131,9 +133,8 @@ def schedule_apply_and_restart(new_exe: str, delay: float = 1.5) -> None:
         f.write(_UPDATER_BAT)
     env = dict(os.environ, WL_NEW=os.path.abspath(new_exe), WL_EXE=exe)   # 유니코드 경로 보존
     subprocess.Popen(
-        ["cmd", "/c", bat], env=env,
-        creationflags=_DETACHED, close_fds=True,
+        ["cmd", "/c", bat], env=env, creationflags=_DETACHED, close_fds=True,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    log.info("업데이트 적용: 재시작합니다 (%s → %s)", exe, new_exe)
+    log.info("업데이트 적용: 앱을 닫습니다 (%s → %s)", exe, new_exe)
     threading.Timer(delay, lambda: os._exit(0)).start()
