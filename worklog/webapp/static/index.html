@@ -106,6 +106,10 @@
   .badge{display:inline-block;font-size:10.5px;padding:1px 6px;border-radius:6px;background:var(--surface-2);color:var(--text-2);margin-right:4px}
   .sec-h{font-size:13px;font-weight:600;margin:14px 0 6px}
   .modal{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;display:none;align-items:center;justify-content:center;padding:22px}
+  .confirm-card{background:var(--surface);border:1px solid var(--border-strong);border-radius:14px;width:100%;max-width:430px;padding:22px 22px 18px;box-shadow:0 18px 50px rgba(0,0,0,.3)}
+  .confirm-card h3{margin:0 0 12px;font-size:16px;font-weight:600}
+  .confirm-card p{margin:0 0 20px;color:var(--text-2);font-size:13px;line-height:1.65;white-space:pre-line}
+  .confirm-foot{display:flex;gap:8px;justify-content:flex-end}
   .sheet{background:var(--surface);border:1px solid var(--border-strong);border-radius:14px;width:100%;max-width:740px;height:min(624px,88vh);display:flex;flex-direction:column;overflow:hidden}
   .sheet-head{display:flex;align-items:center;justify-content:space-between;padding:15px 20px;border-bottom:1px solid var(--border);flex:none}
   .sheet-head h2{font-size:16px;font-weight:600;margin:0}
@@ -364,6 +368,17 @@
         <span id="s-savemsg" class="testmsg" style="margin-right:auto"></span>
         <button id="settings-cancel">닫기</button>
         <button class="primary" id="settings-save">💾 설정 저장</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="updconfirm" style="z-index:60">
+    <div class="confirm-card">
+      <h3 id="uc-title">업데이트 적용</h3>
+      <p id="uc-msg"></p>
+      <div class="confirm-foot">
+        <button id="uc-cancel">나중에</button>
+        <button class="primary" id="uc-ok">확인 · 앱 닫고 적용</button>
       </div>
     </div>
   </div>
@@ -657,9 +672,19 @@
   $("s-update-btn").onclick=function(){ var btn=this, st=$("s-update-status"); btn.disabled=true;
     st.textContent="새 버전 다운로드 중… 잠시만 기다려 주세요"; st.style.color="var(--muted)";
     post("/api/update/apply",{}).then(function(res){ var b=res.body||{};
-      if(b.ok && b.restarting){ st.textContent="✅ 업데이트 적용됨 · 새 버전으로 다시 여는 중… (몇 초 걸릴 수 있어요. 안 열리면 직접 실행)"; st.style.color="var(--ok)"; }
+      if(b.ok && b.staged){
+        st.textContent="✅ 다운로드 완료"; st.style.color="var(--ok)"; btn.disabled=false;
+        $("uc-msg").textContent="새 버전 "+(b.version||"")+" 다운로드가 끝났습니다.\n\n[확인]을 누르면 앱이 닫히고 교체가 적용됩니다.\n잠시 후 앱을 다시 실행해 주세요.\n(자동으로 다시 열리지는 않습니다)";
+        $("updconfirm").style.display="flex";
+      }
       else { st.textContent="실패: "+(b.message||"오류"); st.style.color="var(--danger)"; btn.disabled=false; } })
       .catch(function(e){ st.textContent="오류: "+e.message; st.style.color="var(--danger)"; btn.disabled=false; }); };
+  $("uc-cancel").onclick=function(){ $("updconfirm").style.display="none";
+    var st=$("s-update-status"); st.textContent="다운로드됨 · '업데이트하기'로 언제든 적용"; st.style.color="var(--text-2)"; };
+  $("uc-ok").onclick=function(){ this.disabled=true;
+    $("uc-title").textContent="적용 중…";
+    $("uc-msg").textContent="앱을 닫고 교체를 적용합니다…\n잠시 후 앱을 직접 다시 실행해 주세요.";
+    post("/api/update/finalize",{}).catch(function(){}); };   // 곧 앱이 닫혀 응답을 못 받을 수 있음
 
   function renderRoots(){
     var box=$("s-git-roots");

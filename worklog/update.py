@@ -4,20 +4,18 @@ frozen exe(PyInstaller onefile) 로 실행 중일 때만 실제 교체가 동작
 소스/pip 실행에서는 확인만 하고 교체는 하지 않는다(exe 가 아니므로).
 
 교체 방식(Windows 는 실행 중 exe 를 못 덮어씀):
-  1. 새 exe 를 `<exe>.new` 로 다운로드
-  2. 헬퍼 배치가 현재 exe 잠금이 풀릴 때까지 기다렸다가 `.new` → `<exe>` 로 move
-  3. 현재 프로세스는 잠시 뒤 종료 → 뮤텍스 해제
-  4. 배치가 'settle delay'(백신 스캔이 끝날 시간) 뒤 새 exe 를 자동 재실행
+  1. 새 exe 를 `<exe>.new` 로 다운로드(staging)
+  2. UI 에서 사용자가 '확인'하면 헬퍼 배치를 띄우고 앱을 닫는다
+  3. 배치가 현재 exe 잠금이 풀릴 때까지 기다렸다가 `.new` → `<exe>` 로 move(교체)
+  4. 사용자가 앱을 다시 열면 새 버전이 뜬다
 (yt-dlp / minio-selfupdate 등이 쓰는 표준 rename-swap 패턴)
 
-자동 재실행(auto-relaunch)의 과거 실패 3가지와 대응:
-  - AV 스캔 레이스('Failed to load Python DLL'): 교체 직후 바로 실행하면 백신이 방금
-    교체된 exe 를 스캔하는 중과 겹쳐 onefile 추출이 깨진다 → 교체 후 settle delay 를 둔다.
-  - 윈도우 스테이션 상실('Error' 창): DETACHED_PROCESS 가 스테이션을 떼는 게 원인으로
-    보여, 배치를 CREATE_NO_WINDOW(스테이션 유지)로 띄운다(_UPDATER_FLAGS).
-  - Job Object 로 자식 kill: 앱이 직접 재실행하면 죽는 앱의 job 에 묶여 kill 될 수 있어,
-    앱이 아니라 '배치(cmd)'가 재실행한다(죽은 앱의 job 밖).
-재실행은 best-effort — 실패해도 교체는 이미 끝났고 UI 가 '안 열리면 직접 실행'을 안내한다.
+자동 재실행(auto-relaunch)은 하지 않는다 — onefile 은 실행마다 python313.dll 을
+%TEMP%\\_MEIxxxxxx 에 다시 푸는데, 방금 교체된 exe 를 백신이 스캔하는 창과 겹치면
+추출이 깨져 'Failed to load Python DLL(error 126)' 이 뜬다. 이 레이스는 (자가추출
+onefile 인 한) settle delay 로도 확실히 못 피한다 — 3초 지연으로도 실패를 확인했다.
+그래서 '교체는 확실히, 재실행은 사용자가 직접'으로 두고, 교체 직전 UI 가 안내 알림을
+띄워 갑작스런 종료를 막는다. (근본 해결은 --onedir 로 자가추출 자체를 없애는 것 — 별도 과제)
 """
 
 from __future__ import annotations
@@ -48,20 +46,16 @@ _UPDATER_FLAGS = 0x08000000 | 0x00000200 if os.name == "nt" else 0
 # 현재 exe 가 실행 중이면 move(=덮어쓰기)가 실패해 .new 가 남고, 프로세스가 죽으면 성공한다.
 # 경로는 배치 본문에 넣지 않고 환경변수(WL_NEW/WL_EXE)로 전달 — 한글 경로가 배치 파일
 # 인코딩(cmd 는 OEM 코드페이지로 읽음)에 깨지는 것을 방지. 본문은 순수 ASCII 라 안전.
-# 흐름: (1) move 먼저 시도(즉시) → 잠겨서 실패하면 ~1초 대기 후 재시도 → 교체 성공 시
-#       (2) settle delay(~3초, 백신 스캔 시간) → (3) 자동 재실행(best-effort).
+# 흐름: move 먼저 시도(즉시) → 잠겨서 실패하면 ~1초 대기 후 재시도 → 교체 성공하면 종료.
+# 재실행은 하지 않는다(모듈 docstring 참고) — 사용자가 앱을 직접 다시 연다.
 # ping 127.0.0.1 은 콘솔 없이 쓰는 표준 sleep 트릭(-n N = 약 N-1 초).
 _UPDATER_BAT = """@echo off
 for /l %%i in (1,1,40) do (
   move /y "%WL_NEW%" "%WL_EXE%" >nul 2>&1
-  if not exist "%WL_NEW%" goto :swapped
+  if not exist "%WL_NEW%" goto :done
   ping -n 2 127.0.0.1 >nul
 )
-goto :cleanup
-:swapped
-ping -n 4 127.0.0.1 >nul
-if exist "%WL_EXE%" start "" "%WL_EXE%"
-:cleanup
+:done
 del "%~f0"
 """
 
@@ -178,11 +172,10 @@ def cleanup_stale_extractions() -> int:
 
 
 def schedule_apply_and_restart(new_exe: str, delay: float = 0.8) -> None:
-    """헬퍼 배치(종료 대기 → 교체 → settle delay → 자동 재실행)를 띄우고,
-    잠시(delay) 뒤 이 프로세스를 종료 예약한다.
+    """헬퍼 배치(잠금 풀릴 때까지 대기 → 교체)를 띄우고, 잠시(delay) 뒤 이 프로세스를 종료 예약.
 
-    자동 재실행은 best-effort (모듈 docstring 참고) — 실패해도 교체는 이미 끝났다.
-    delay 는 apply 응답이 브라우저로 나갈 시간만 확보하면 되므로 짧게 잡는다.
+    재실행은 하지 않는다(모듈 docstring 참고) — 교체만 하고, 사용자가 앱을 다시 연다.
+    delay 는 finalize 응답이 브라우저로 나갈 시간만 확보하면 되므로 짧게 잡는다.
     """
     exe = os.path.abspath(sys.executable)
     bat = os.path.join(tempfile.gettempdir(), "worklog_update.bat")

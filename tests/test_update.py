@@ -86,14 +86,12 @@ def test_check_network_error_is_captured(monkeypatch):
     assert "no net" in (r["error"] or "")
 
 
-def test_updater_bat_swaps_then_settles_then_relaunches():
+def test_updater_bat_swaps_without_relaunch():
     bat = update._UPDATER_BAT
-    # 교체(move) → settle delay(ping) → 자동 재실행(start) 순서가 모두 있어야 한다.
+    # 교체(move)만 하고 재실행(start)은 하지 않는다 — 재실행 레이스가 onefile 의 DLL 로드
+    # 에러를 유발하므로(settle delay 로도 확실히 못 막음), 사용자가 앱을 직접 다시 연다.
     assert "move /y" in bat
-    assert "start" in bat
-    i_swap = bat.index(":swapped")
-    # settle delay(ping)와 start 는 교체 성공(:swapped) 이후에 온다.
-    assert bat.index("ping", i_swap) < bat.index("start", i_swap)
+    assert "start" not in bat
 
 
 @pytest.mark.skipif(os.name != "nt", reason="콘솔창 숨김 플래그는 Windows 전용")

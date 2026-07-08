@@ -274,9 +274,15 @@ def create_app(config_path: str | None = None) -> "FastAPI":
         from .. import update
         return update.check()
 
+    _upd = {"staged": None}   # 다운로드해 둔 <exe>.new 경로(finalize 에서 교체에 사용)
+
     @app.post("/api/update/apply")
     def update_apply(body: dict = Body(default={})):
-        """새 버전 exe 를 내려받아 교체하고 앱을 재시작한다. (frozen exe 에서만)"""
+        """새 버전 exe 를 내려받아 교체 준비(staging)만 한다. 실제 닫기/교체는 finalize 에서.
+
+        앱을 여기서 닫지 않는 이유: UI 가 '확인하면 닫고 적용' 알림을 띄운 뒤, 사용자가
+        확인했을 때 finalize 로 닫도록 해서 갑작스런 종료를 막는다.
+        """
         from .. import update
         if not update.is_frozen():
             return JSONResponse(
@@ -286,14 +292,24 @@ def create_app(config_path: str | None = None) -> "FastAPI":
             return JSONResponse(
                 {"ok": False, "message": "적용할 새 버전이 없습니다."}, status_code=400)
         try:
-            new = update.download_and_stage(info["download_url"])
+            _upd["staged"] = update.download_and_stage(info["download_url"])
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"ok": False, "message": f"다운로드 실패: {e}"}, status_code=400)
+        return {"ok": True, "staged": True, "version": info.get("latest")}
+
+    @app.post("/api/update/finalize")
+    def update_finalize(body: dict = Body(default={})):
+        """staging 된 새 exe 로 교체 배치를 띄우고 앱을 닫는다(재실행 없음 → 사용자가 다시 실행)."""
+        from .. import update
+        new = _upd.get("staged")
+        if not new or not os.path.exists(new):
+            return JSONResponse(
+                {"ok": False, "message": "적용할 다운로드가 없습니다. 다시 시도해 주세요."}, status_code=400)
         try:
-            update.schedule_apply_and_restart(new)   # 배치 실행 예약 + 1.5초 뒤 종료
+            update.schedule_apply_and_restart(new)   # 교체 배치 + 잠시 뒤 앱 종료(재실행 안 함)
         except Exception as e:  # noqa: BLE001
-            return JSONResponse({"ok": False, "message": f"재시작 예약 실패: {e}"}, status_code=400)
-        return {"ok": True, "restarting": True, "version": info.get("latest")}
+            return JSONResponse({"ok": False, "message": f"적용 실패: {e}"}, status_code=400)
+        return {"ok": True, "closing": True}
 
     # ---- 설정 (앱 내부에서 저장/불러오기, 비밀 값은 마스킹) ----
 
