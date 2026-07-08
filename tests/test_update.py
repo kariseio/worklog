@@ -86,10 +86,14 @@ def test_check_network_error_is_captured(monkeypatch):
     assert "no net" in (r["error"] or "")
 
 
-def test_updater_bat_has_no_relaunch():
-    # 재실행(start) 제거 확인 — 재실행 레이스가 DLL 로드 에러를 유발하므로 교체만 한다.
-    assert "start" not in update._UPDATER_BAT
-    assert "move /y" in update._UPDATER_BAT
+def test_updater_bat_swaps_then_settles_then_relaunches():
+    bat = update._UPDATER_BAT
+    # 교체(move) → settle delay(ping) → 자동 재실행(start) 순서가 모두 있어야 한다.
+    assert "move /y" in bat
+    assert "start" in bat
+    i_swap = bat.index(":swapped")
+    # settle delay(ping)와 start 는 교체 성공(:swapped) 이후에 온다.
+    assert bat.index("ping", i_swap) < bat.index("start", i_swap)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="콘솔창 숨김 플래그는 Windows 전용")
