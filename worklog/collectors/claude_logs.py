@@ -75,7 +75,8 @@ class ClaudeLogCollector(Collector):
 
     def _parse_file(self, path: str, ctx: CollectContext) -> ClaudeSession | None:
         recs = []
-        with open(path, encoding="utf-8") as fh:
+        # errors="replace": 한 줄에 깨진 바이트가 있어도 세션 파일 전체가 드롭되지 않게.
+        with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:

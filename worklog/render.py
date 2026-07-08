@@ -78,14 +78,17 @@ def _git(lines, data):
 def _claude(lines, data):
     cl = data.claude
     lines.append("## 🤖 Claude Code 작업")
-    if not cl or not cl.sessions:
+    # analyze 와 동일하게 업무일지 생성기 자신의 요약 세션을 제외(세션 수/토큰 일치).
+    sessions = [s for s in (cl.sessions if cl else []) if not _is_meta_session(s)]
+    if not sessions:
         lines.append("- (세션 없음)")
         lines.append("")
         return
+    total_tokens = sum(s.output_tokens for s in sessions)
     lines.append(
-        f"- 총 **{cl.total_sessions}세션** · 출력 {cl.total_output_tokens:,} 토큰"
+        f"- 총 **{len(sessions)}세션** · 출력 {total_tokens:,} 토큰"
     )
-    for s in cl.sessions:
+    for s in sessions:
         head = s.title or s.intent or "(제목 없음)"
         proj = s.project or (s.cwd or "?")
         branch = f" [{s.git_branch}]" if s.git_branch else ""

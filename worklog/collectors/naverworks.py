@@ -243,22 +243,32 @@ class NaverWorksCollector(Collector):
         else:
             url = f"{API_BASE}/users/{quote(c.user_id)}/calendar/events"
 
-        try:
-            resp = requests.get(
-                url,
-                headers={"Authorization": f"Bearer {token}"},
-                params={"fromDateTime": from_dt, "untilDateTime": until_dt},
-                timeout=30,
-            )
-        except requests.exceptions.RequestException as e:
-            raise _NWError(str(e)) from e
-        if resp.status_code != 200:
-            raise _NWError(f"HTTP {resp.status_code}: {resp.text[:300]}")
-        try:
-            payload = resp.json()
-        except ValueError as e:
-            raise _NWError(f"캘린더 응답 파싱 실패(JSON 아님): {resp.text[:200]}") from e
-        return _normalize_events(payload)
+        events: list[CalendarEvent] = []
+        cursor = None
+        for _ in range(50):  # 페이지네이션(cursor) — 이벤트가 페이지 상한을 넘어도 누락 없이 수집
+            params = {"fromDateTime": from_dt, "untilDateTime": until_dt}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                resp = requests.get(
+                    url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    params=params,
+                    timeout=30,
+                )
+            except requests.exceptions.RequestException as e:
+                raise _NWError(str(e)) from e
+            if resp.status_code != 200:
+                raise _NWError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+            try:
+                payload = resp.json()
+            except ValueError as e:
+                raise _NWError(f"캘린더 응답 파싱 실패(JSON 아님): {resp.text[:200]}") from e
+            events.extend(_normalize_events(payload))
+            cursor = (payload.get("responseMetaData") or {}).get("nextCursor") if isinstance(payload, dict) else None
+            if not cursor:
+                break
+        return events
 
 
 def _normalize_events(payload: dict) -> list[CalendarEvent]:
