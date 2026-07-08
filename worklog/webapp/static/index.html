@@ -149,6 +149,7 @@
     <span class="brand">업무일지</span>
     <span class="spacer"></span>
     <span id="envnote" class="label"></span>
+    <button class="iconbtn" id="updnote" style="display:none;margin-left:8px;color:var(--ok);border-color:var(--ok)" aria-label="업데이트">⬆ 업데이트</button>
     <button class="iconbtn" id="settingsbtn" style="margin-left:10px" aria-label="설정">⚙ 설정</button>
   </header>
 
@@ -339,7 +340,11 @@
             <div class="setsec">
               <h3 class="seth">버전</h3>
               <div class="verbig">업무일지 <span id="s-info-version">–</span></div>
-              <p class="setdesc" style="margin-top:6px">그날의 git · Claude Code · 회의 · 앱 사용을 모아 시간대별 업무일지로 정리합니다.</p>
+              <div class="settest" style="margin-top:10px">
+                <button id="s-update-btn" type="button" class="primary" style="display:none">⬆ 업데이트하기</button>
+                <span id="s-update-status" class="testmsg"></span>
+              </div>
+              <p class="setdesc" style="margin-top:8px">그날의 git · Claude Code · 회의 · 앱 사용을 모아 시간대별 업무일지로 정리합니다.</p>
             </div>
             <div class="setsec">
               <h3 class="seth">경로</h3>
@@ -623,6 +628,33 @@
   function tmsg(id,msg,color){ var el=$(id); el.textContent=msg; el.style.color=color||"var(--text-2)"; }
   function refreshStatus(){ api("/api/status").then(function(res){ var b=res.body||{}; $("envnote").textContent=(b.timezone||"")+" · 요약 "+((b.summarizer||{}).provider||""); }); }
 
+  // ---- 자동 업데이트 ----
+  var updInfo = null;
+  function refreshUpdate(){
+    return api("/api/update/check").then(function(res){ updInfo=res.body||{}; renderUpdate(); return updInfo; })
+      .catch(function(e){ updInfo={error:e.message}; renderUpdate(); });
+  }
+  function renderUpdate(){
+    var u=updInfo||{}, note=$("updnote"), st=$("s-update-status"), btn=$("s-update-btn");
+    note.style.display = u.update_available ? "inline-flex" : "none";
+    if(u.update_available) note.textContent = "⬆ 새 버전 "+u.latest;
+    btn.style.display="none";
+    if(u.error){ st.textContent="업데이트 확인 실패"; st.style.color="var(--text-2)"; }
+    else if(u.update_available){
+      st.textContent="새 버전 "+u.latest+" 있음 (현재 "+u.current+")"; st.style.color="var(--ok)";
+      if(u.frozen){ btn.style.display="inline-flex"; } else { st.textContent+=" · exe 에서만 적용 가능"; }
+    }
+    else if(u.latest){ st.textContent="최신 버전입니다 ("+u.latest+")"; st.style.color="var(--text-2)"; }
+    else { st.textContent=""; }
+  }
+  $("updnote").onclick=function(){ openSettings(); setTimeout(function(){ selectTab("about"); }, 350); };
+  $("s-update-btn").onclick=function(){ var btn=this, st=$("s-update-status"); btn.disabled=true;
+    st.textContent="새 버전 다운로드 중… (잠시만요, 재시작됩니다)"; st.style.color="var(--muted)";
+    post("/api/update/apply",{}).then(function(res){ var b=res.body||{};
+      if(b.ok && b.restarting){ st.textContent="업데이트 완료 · 재시작합니다…"; st.style.color="var(--ok)"; }
+      else { st.textContent="실패: "+(b.message||"오류"); st.style.color="var(--danger)"; btn.disabled=false; } })
+      .catch(function(e){ st.textContent="오류: "+e.message; st.style.color="var(--danger)"; btn.disabled=false; }); };
+
   function renderRoots(){
     var box=$("s-git-roots");
     if(!scanRoots.length){ box.innerHTML='<span class="testmsg">추가된 드라이브가 없습니다.</span>'; return; }
@@ -685,6 +717,7 @@
       var p=s.paths||{};
       $("s-info-version").textContent="v"+(s.version||"?"); $("s-info-settings").textContent=p.settings_file||"–"; $("s-info-savedir").textContent=p.save_dir||"–";
       ["s-ob-msg","s-no-msg","s-nw-msg","s-md-msg","s-savemsg"].forEach(function(id){ $(id).textContent=""; });
+      renderUpdate(); refreshUpdate();   // 정보 탭 업데이트 상태 갱신
       selectTab("general");
       openModal();
     }).catch(function(e){
@@ -751,6 +784,7 @@
 
   setDateInput(todayISO());
   refreshStatus();
+  refreshUpdate();
   loadHistory();
 })();
 </script>

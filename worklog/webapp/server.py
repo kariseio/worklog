@@ -227,6 +227,30 @@ def create_app(config_path: str | None = None) -> "FastAPI":
         """스캔 루트로 고를 수 있는 물리 볼륨 목록 [{path, label}]."""
         return {"drives": drives_info()}
 
+    @app.get("/api/update/check")
+    def update_check():
+        """GitHub Releases 에서 최신 버전 확인."""
+        from .. import update
+        return update.check()
+
+    @app.post("/api/update/apply")
+    def update_apply(body: dict = Body(default={})):
+        """새 버전 exe 를 내려받아 교체하고 앱을 재시작한다. (frozen exe 에서만)"""
+        from .. import update
+        if not update.is_frozen():
+            return JSONResponse(
+                {"ok": False, "message": "설치본(exe)에서만 업데이트할 수 있습니다."}, status_code=400)
+        info = update.check()
+        if not info.get("update_available") or not info.get("download_url"):
+            return JSONResponse(
+                {"ok": False, "message": "적용할 새 버전이 없습니다."}, status_code=400)
+        try:
+            new = update.download_and_stage(info["download_url"])
+        except Exception as e:  # noqa: BLE001
+            return JSONResponse({"ok": False, "message": f"다운로드 실패: {e}"}, status_code=400)
+        update.schedule_apply_and_restart(new)   # 배치 실행 예약 + 1.5초 뒤 종료
+        return {"ok": True, "restarting": True, "version": info.get("latest")}
+
     # ---- 설정 (앱 내부에서 저장/불러오기, 비밀 값은 마스킹) ----
 
     @app.get("/api/settings")
