@@ -270,15 +270,26 @@ def load_app_settings() -> dict:
         with path.open(encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except json.JSONDecodeError:
+        # 손상된 파일(부분 쓰기 등)은 .bak 로 보존해 조용한 전소실을 막는다.
+        try:
+            path.replace(path.with_suffix(".json.bak"))
+        except OSError:
+            pass
+        return {}
+    except OSError:
         return {}
 
 
 def save_app_settings(data: dict) -> Path:
     path = app_settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
+    # 임시 파일에 완전히 쓴 뒤 os.replace 로 원자적 교체 — 크래시/디스크풀 시에도
+    # 기존 settings.json 이 절반만 쓰여 손상되지 않는다(비밀값 전소실 방지).
+    tmp = path.with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
     return path
 
 

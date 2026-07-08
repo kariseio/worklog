@@ -60,6 +60,22 @@ def set_pick_path_callback(fn) -> None:
     _pick_cb = fn
 
 
+def _root_definitely_gone(root: str) -> bool:
+    """루트가 '확실히 삭제됨'인지. 드라이브/공유는 살아있는데 폴더만 없을 때만 True.
+
+    드라이브 자체가 미마운트(외장 SSD·USB·네트워크 일시 분리)면 False → 보존.
+    """
+    p = os.path.expanduser(str(root))
+    if os.path.isdir(p):
+        return False                       # 존재 → 삭제 아님
+    anchor = os.path.splitdrive(p)[0]      # 'E:' 또는 '\\\\server\\share'
+    if not anchor:
+        return True                        # 앵커 없는 경로 → 판단 불가, 없으면 삭제 취급
+    if not os.path.exists(anchor + os.sep):
+        return False                       # 드라이브/공유 미마운트 → 일시 부재로 보존
+    return True                            # 드라이브는 있는데 폴더만 없음 → 진짜 삭제
+
+
 def _prune_missing_scan_roots() -> list[str]:
     """캐시(settings.json)의 git 스캔 루트 중 실제로 없어진 폴더를 제거한다.
 
@@ -74,7 +90,7 @@ def _prune_missing_scan_roots() -> list[str]:
         return []
     kept, removed = [], []
     for r in roots:
-        (kept if r and os.path.isdir(os.path.expanduser(str(r))) else removed).append(r)
+        (removed if (not r or _root_definitely_gone(r)) else kept).append(r)
     if removed:
         sources["git"]["scan_roots"] = kept
         try:

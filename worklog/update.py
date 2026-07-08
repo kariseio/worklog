@@ -32,16 +32,18 @@ _DETACHED = 0x00000008 | 0x00000200 if os.name == "nt" else 0
 
 # tasklist/PID 대신 'exe 잠금이 풀릴 때까지 move 재시도' — 콘솔 없이도 안정적.
 # 현재 exe 가 실행 중이면 move(=덮어쓰기)가 실패해 .new 가 남고, 프로세스가 죽으면 성공한다.
+# 경로는 배치 본문에 넣지 않고 환경변수(WL_NEW/WL_EXE)로 전달 — 한글 경로가 배치 파일
+# 인코딩(cmd 는 OEM 코드페이지로 읽음)에 깨지는 것을 방지. 본문은 순수 ASCII 라 안전.
 _UPDATER_BAT = """@echo off
 for /l %%i in (1,1,40) do (
   ping -n 2 127.0.0.1 >nul
-  move /y "{new}" "{exe}" >nul 2>&1
-  if not exist "{new}" goto :relaunch
+  move /y "%WL_NEW%" "%WL_EXE%" >nul 2>&1
+  if not exist "%WL_NEW%" goto :relaunch
 )
 del "%~f0"
 exit /b
 :relaunch
-start "" "{exe}"
+start "" "%WL_EXE%"
 del "%~f0"
 """
 
@@ -125,10 +127,11 @@ def schedule_apply_and_restart(new_exe: str, delay: float = 1.5) -> None:
     """헬퍼 배치(종료 대기 → 교체 → 재실행)를 띄우고, 잠시 뒤 이 프로세스를 종료 예약."""
     exe = os.path.abspath(sys.executable)
     bat = os.path.join(tempfile.gettempdir(), "worklog_update.bat")
-    with open(bat, "w", encoding="ascii", errors="replace") as f:
-        f.write(_UPDATER_BAT.format(new=new_exe, exe=exe))
+    with open(bat, "w", encoding="ascii") as f:   # 본문 순수 ASCII (경로는 env 로 전달)
+        f.write(_UPDATER_BAT)
+    env = dict(os.environ, WL_NEW=os.path.abspath(new_exe), WL_EXE=exe)   # 유니코드 경로 보존
     subprocess.Popen(
-        ["cmd", "/c", bat],
+        ["cmd", "/c", bat], env=env,
         creationflags=_DETACHED, close_fds=True,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )

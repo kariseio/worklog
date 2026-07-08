@@ -479,6 +479,8 @@
     $("chips").innerHTML = S.statuses.map(chipFor).join("");
     $("evidence").innerHTML = renderEvidence(S.evidence||{});
     renderAnalysis(S.analysis);
+    // 요약 대기 중엔 저장/편집/다시요약 잠금 — 요약 없는 일지 저장·요약 폐기 방지
+    $("save").disabled = $("editbtn").disabled = $("rebtn").disabled = !!S.summarizing;
   }
 
   function revealContent(){ showContent(); fadeReplay($("content")); }
@@ -557,6 +559,7 @@
   }
 
   function toggleEdit(){
+    if(S.summarizing){ return; }   // 요약 중엔 편집 금지(도착한 요약 폐기 방지)
     S.editing = !S.editing;
     if(S.editing){
       $("editor").value = (S.summary != null ? S.summary : S.facts);
@@ -569,6 +572,7 @@
   }
 
   function save(){
+    if(S.summarizing){ flash("savemsg","AI 요약 완료 후 저장하세요","var(--warn)"); return; }
     var targets = [].slice.call(document.querySelectorAll(".tg")).filter(function(c){return c.checked;}).map(function(c){return c.value;});
     if(!targets.length){ flash("savemsg","대상을 선택하세요","var(--warn)"); return; }
     if(S.editing){ toggleEdit(); }
@@ -609,6 +613,7 @@
       $("empty").style.display="none"; $("generating").style.display="none"; $("content").style.display="block"; $("evwrap").style.display="none"; $("analysis").style.display="none"; $("savebar").style.display="none";
       $("content-date").textContent=d+" (저장됨)";
       $("view").style.display="block"; $("editor").style.display="none"; S.editing=false; $("editbtn").innerHTML="✎ 편집";
+      $("editbtn").disabled=false; $("rebtn").disabled=false;   // 요약중이던 잠금 해제(저장바는 숨김)
       $("view").innerHTML=renderMd(res.body.markdown);
       fadeReplay($("content"));
       markActive();
