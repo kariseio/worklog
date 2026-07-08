@@ -45,11 +45,19 @@ STATIC = Path(__file__).resolve().parent / "static"
 
 # 단일 인스턴스: 두 번째 실행이 /api/show 를 부르면 기존 창을 앞으로 띄운다.
 _show_cb = None
+# 데스크톱(pywebview) 네이티브 경로 선택 다이얼로그. 브라우저 폴백에선 None.
+_pick_cb = None
 
 
 def set_show_callback(fn) -> None:
     global _show_cb
     _show_cb = fn
+
+
+def set_pick_path_callback(fn) -> None:
+    """fn(mode, file_types) -> 선택 경로(str) | None. mode: 'folder' | 'file'."""
+    global _pick_cb
+    _pick_cb = fn
 
 
 def _prune_missing_scan_roots() -> list[str]:
@@ -226,6 +234,23 @@ def create_app(config_path: str | None = None) -> "FastAPI":
     def drives():
         """스캔 루트로 고를 수 있는 물리 볼륨 목록 [{path, label}]."""
         return {"drives": drives_info()}
+
+    @app.post("/api/pick-path")
+    def pick_path(body: dict = Body(default={})):
+        """네이티브 폴더/파일 선택 다이얼로그. 데스크톱 앱에서만 지원."""
+        if not _pick_cb:
+            return JSONResponse(
+                {"ok": False, "message": "경로 선택창은 데스크톱 앱에서만 지원됩니다. 직접 입력하세요."},
+                status_code=400)
+        mode = (body or {}).get("mode") or "folder"
+        file_types = (body or {}).get("file_types") or []
+        try:
+            path = _pick_cb(mode, file_types)
+        except Exception as e:  # noqa: BLE001
+            return JSONResponse({"ok": False, "message": str(e)}, status_code=400)
+        if not path:
+            return {"ok": False, "cancelled": True}
+        return {"ok": True, "path": str(path)}
 
     @app.get("/api/update/check")
     def update_check():
