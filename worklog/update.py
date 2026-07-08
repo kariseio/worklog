@@ -32,9 +32,12 @@ log = logging.getLogger("worklog")
 REPO = "kariseio/worklog"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 
-# 배치 실행 플래그: DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — 부모 종료와 무관하게 배치가 살아남아
-# exe 교체(swap)를 끝까지 수행하게 한다.
-_DETACHED = 0x00000008 | 0x00000200 if os.name == "nt" else 0
+# 배치 실행 플래그: CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP.
+# CREATE_NO_WINDOW 는 콘솔을 '숨긴 채' 생성해, cmd 가 내부에서 돌리는 ping/move 같은
+# 콘솔 프로그램이 그 숨겨진 콘솔을 물려받아 창이 뜨지 않는다. (DETACHED_PROCESS 는 콘솔을
+# 아예 없애 자식 콘솔앱이 '새 콘솔창'을 띄우는 문제가 있어 안 쓴다.)
+# 이 플래그로 띄운 프로세스는 부모(앱) 종료 뒤에도 살아남아 교체(swap)를 끝까지 수행한다.
+_UPDATER_FLAGS = 0x08000000 | 0x00000200 if os.name == "nt" else 0
 
 # tasklist/PID 대신 'exe 잠금이 풀릴 때까지 move 재시도' — 콘솔 없이도 안정적.
 # 현재 exe 가 실행 중이면 move(=덮어쓰기)가 실패해 .new 가 남고, 프로세스가 죽으면 성공한다.
@@ -175,7 +178,7 @@ def schedule_apply_and_restart(new_exe: str, delay: float = 1.5) -> None:
         f.write(_UPDATER_BAT)
     env = dict(os.environ, WL_NEW=os.path.abspath(new_exe), WL_EXE=exe)   # 유니코드 경로 보존
     subprocess.Popen(
-        ["cmd", "/c", bat], env=env, creationflags=_DETACHED, close_fds=True,
+        ["cmd", "/c", bat], env=env, creationflags=_UPDATER_FLAGS, close_fds=True,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     log.info("업데이트 적용: 앱을 닫습니다 (%s → %s)", exe, new_exe)

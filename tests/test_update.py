@@ -92,6 +92,14 @@ def test_updater_bat_has_no_relaunch():
     assert "move /y" in update._UPDATER_BAT
 
 
+@pytest.mark.skipif(os.name != "nt", reason="콘솔창 숨김 플래그는 Windows 전용")
+def test_updater_uses_hidden_console_not_detached():
+    # CREATE_NO_WINDOW(숨김 콘솔) 를 써서 배치의 ping/move 창이 뜨지 않게 한다.
+    # DETACHED_PROCESS(콘솔 제거)면 자식 콘솔앱이 새 창을 띄우므로 쓰지 않는다.
+    assert update._UPDATER_FLAGS & 0x08000000        # CREATE_NO_WINDOW
+    assert not (update._UPDATER_FLAGS & 0x00000008)  # not DETACHED_PROCESS
+
+
 def test_cleanup_noop_when_not_frozen(monkeypatch):
     monkeypatch.setattr(update, "is_frozen", lambda: False)
     assert update.cleanup_stale_extractions() == 0

@@ -9,6 +9,7 @@
   원격 배포는 태그(`vX.Y.Z`)에 맞춰 **GitHub Releases** 에 첨부하는 방식을 권장.
 
 ## 버전 목록
+- `worklog-0.1.10.exe` — v0.1.10 (**자동 업데이트 시 ping/cmd 창 깜빡임 제거** — 헬퍼 배치를 DETACHED_PROCESS 대신 CREATE_NO_WINDOW[숨김 콘솔]로 띄워 내부 ping/move 창이 안 뜨게. ※ 이 수정은 0.1.10부터 나가는 업데이트에 적용됨)
 - `worklog-0.1.9.exe` — v0.1.9 (**터미널 깜빡임 제거**[claude.CMD 셔임에 STARTUPINFO/SW_HIDE 적용]·**자동 업데이트 DLL 로드 에러 방지**[교체 후 레이스 유발 자동 재실행 제거]·**누출된 onefile 임시폴더 시작 시 자동 청소**)
 - `worklog-0.1.8.exe` — v0.1.8 (유지보수 릴리스 — 기능 변경 없음. 0.1.7→0.1.8 자동 업데이트 검증용 버전 상향)
 - `worklog-0.1.7.exe` — v0.1.7 (자동 업데이트 정리 — 다운로드·교체는 확실히 동작, 재시작은 best-effort라 "다시 실행" 안내로 정직화)
