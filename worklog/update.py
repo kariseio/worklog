@@ -20,24 +20,27 @@ import tempfile
 import threading
 
 from . import __version__
-from .util import CREATE_NO_WINDOW
 
 log = logging.getLogger("worklog")
 
 REPO = "kariseio/worklog"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 
-# Windows: 부모 종료 후에도 살아남도록 분리 실행
-_DETACHED = 0x00000008 | 0x00000200 if os.name == "nt" else 0   # DETACHED_PROCESS | NEW_GROUP
+# Windows: 부모 종료 후에도 살아남도록 분리 실행 (DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+# CREATE_NO_WINDOW 는 DETACHED_PROCESS 와 충돌해 콘솔 도구(tasklist 등)를 망가뜨리므로 넣지 않는다.
+_DETACHED = 0x00000008 | 0x00000200 if os.name == "nt" else 0
 
+# tasklist/PID 대신 'exe 잠금이 풀릴 때까지 move 재시도' — 콘솔 없이도 안정적.
+# 현재 exe 가 실행 중이면 move(=덮어쓰기)가 실패해 .new 가 남고, 프로세스가 죽으면 성공한다.
 _UPDATER_BAT = """@echo off
-:wait
-tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
-if not errorlevel 1 (
+for /l %%i in (1,1,40) do (
   ping -n 2 127.0.0.1 >nul
-  goto wait
+  move /y "{new}" "{exe}" >nul 2>&1
+  if not exist "{new}" goto :relaunch
 )
-move /y "{new}" "{exe}" >nul
+del "%~f0"
+exit /b
+:relaunch
 start "" "{exe}"
 del "%~f0"
 """
@@ -121,13 +124,12 @@ def download_and_stage(download_url: str, timeout: float = 180.0) -> str:
 def schedule_apply_and_restart(new_exe: str, delay: float = 1.5) -> None:
     """헬퍼 배치(종료 대기 → 교체 → 재실행)를 띄우고, 잠시 뒤 이 프로세스를 종료 예약."""
     exe = os.path.abspath(sys.executable)
-    pid = os.getpid()
     bat = os.path.join(tempfile.gettempdir(), "worklog_update.bat")
     with open(bat, "w", encoding="ascii", errors="replace") as f:
-        f.write(_UPDATER_BAT.format(pid=pid, new=new_exe, exe=exe))
+        f.write(_UPDATER_BAT.format(new=new_exe, exe=exe))
     subprocess.Popen(
         ["cmd", "/c", bat],
-        creationflags=CREATE_NO_WINDOW | _DETACHED, close_fds=True,
+        creationflags=_DETACHED, close_fds=True,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     log.info("업데이트 적용: 재시작합니다 (%s → %s)", exe, new_exe)
