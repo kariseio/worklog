@@ -126,6 +126,7 @@
   .setrow.top{align-items:flex-start}
   .setrow>label{font-size:12.5px;color:var(--text-2);width:118px;flex:none;padding-top:1px}
   .setrow>input,.setrow>select,.setrow>textarea{flex:1;min-width:0}
+  .pathbrowse{flex:none;padding:7px 10px;font-size:14px;line-height:1}
   .setrow textarea{min-height:56px;font-family:var(--mono);font-size:12px;line-height:1.5}
   #settings-modal input:not([type=checkbox]),#settings-modal select,#settings-modal textarea{font-family:inherit;font-size:13px;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:7px 9px}
   .settest{display:flex;align-items:center;gap:10px;margin-top:9px;flex-wrap:wrap}
@@ -295,7 +296,7 @@
               <div class="setrow"><label>Client ID</label><input id="s-nw-cid" type="text" autocomplete="off" /></div>
               <div class="setrow"><label>Client Secret</label><input id="s-nw-secret" type="password" autocomplete="off" /></div>
               <div class="setrow"><label>Service Account</label><input id="s-nw-sa" type="text" placeholder="xxxx@yourdomain" /></div>
-              <div class="setrow"><label>Private Key 경로</label><input id="s-nw-keypath" type="text" placeholder="./secrets/private.key" /></div>
+              <div class="setrow"><label>Private Key 경로</label><input id="s-nw-keypath" type="text" placeholder="./secrets/private.key" /><button type="button" class="pathbrowse" data-pick="s-nw-keypath" data-mode="file" title="파일 선택">📁</button></div>
               <div class="setrow"><label>사용자 ID</label><input id="s-nw-user" type="text" placeholder="you@yourdomain" /></div>
               <div class="setrow top"><label>캘린더</label>
                 <div id="s-nw-cals" style="flex:1;max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius);padding:6px 9px">
@@ -312,13 +313,13 @@
             <div class="setsec">
               <h3 class="seth"><label style="display:inline-flex;align-items:center;gap:7px"><input type="checkbox" id="s-md-en" /> 로컬 Markdown</label></h3>
               <p class="setdesc">기본 저장 위치입니다. 비우면 문서 폴더의 <code>업무일지</code> 하위에 저장됩니다.</p>
-              <div class="setrow"><label>저장 폴더</label><input id="s-md-dir" type="text" placeholder="문서\업무일지 (기본값)" /></div>
+              <div class="setrow"><label>저장 폴더</label><input id="s-md-dir" type="text" placeholder="문서\업무일지 (기본값)" /><button type="button" class="pathbrowse" data-pick="s-md-dir" data-mode="folder" title="폴더 선택">📁</button></div>
               <div class="settest"><button id="s-md-open" type="button">📂 폴더 열기</button><span id="s-md-msg" class="testmsg"></span></div>
             </div>
 
             <div class="setsec">
               <h3 class="seth"><label style="display:inline-flex;align-items:center;gap:7px"><input type="checkbox" id="s-ob-en" /> Obsidian 저장</label></h3>
-              <div class="setrow"><label>Vault 경로</label><input id="s-ob-vault" type="text" placeholder="예: D:\Obsidian\MyVault" /></div>
+              <div class="setrow"><label>Vault 경로</label><input id="s-ob-vault" type="text" placeholder="예: D:\Obsidian\MyVault" /><button type="button" class="pathbrowse" data-pick="s-ob-vault" data-mode="folder" title="폴더 선택">📁</button></div>
               <div class="setrow"><label>하위 폴더</label><input id="s-ob-sub" type="text" placeholder="업무일지" /></div>
               <div class="settest"><button id="s-ob-test">연결 테스트</button><span id="s-ob-msg" class="testmsg"></span></div>
             </div>
@@ -755,6 +756,20 @@
   $("s-md-open").onclick=function(){ var btn=this; btn.disabled=true; tmsg("s-md-msg","여는 중…","var(--muted)");
     post("/api/open-folder",{path:$("s-md-dir").value.trim()}).then(function(res){ var b=res.body||{}; tmsg("s-md-msg",b.ok?("열림 · "+(b.path||"")):("실패: "+(b.message||"")),b.ok?"var(--ok)":"var(--danger)"); })
       .catch(function(e){ tmsg("s-md-msg","오류: "+e.message,"var(--danger)"); }).finally(function(){ btn.disabled=false; }); };
+
+  // 경로 입력칸 옆 '📁 찾아보기' — 네이티브 폴더/파일 선택창(앱). 브라우저에선 직접 입력.
+  [].slice.call(document.querySelectorAll(".pathbrowse")).forEach(function(b){
+    b.onclick=function(){
+      var inp=$(b.getAttribute("data-pick")), mode=b.getAttribute("data-mode")||"folder";
+      var payload={mode:mode};
+      if(mode==="file"){ payload.file_types=["Key files (*.key;*.pem)","All files (*.*)"]; }
+      b.disabled=true;
+      post("/api/pick-path",payload).then(function(res){ var r=res.body||{};
+        if(res.ok && r.ok && r.path){ inp.value=r.path; }
+        else if(!r.cancelled && inp){ inp.focus(); }   // 브라우저 폴백: 직접 입력
+      }).catch(function(){ if(inp) inp.focus(); }).finally(function(){ b.disabled=false; });
+    };
+  });
 
   // 스캔 범위: 전체 하드디스크 ↔ 특정 드라이브 지정(드롭다운에서 골라 '추가하기')
   $("s-git-specify").onchange=updateGitScope;

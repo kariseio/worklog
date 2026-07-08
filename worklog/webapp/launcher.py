@@ -157,7 +157,10 @@ def run_app(config_path: str | None = None) -> int:
         log.warning("pywebview 창 생성 실패 → 브라우저로 폴백: %s", e)
 
     if used_gui:
+        from .server import set_pick_path_callback
+
         set_show_callback(lambda: window.show())      # 두 번째 실행 → 이 창을 앞으로
+        set_pick_path_callback(lambda mode, ft: _pick_path(webview, window, mode, ft))  # 경로 선택창
         tray = _setup_tray(webview, window, server)   # 닫으면 트레이로(가능하면)
         log.info("시스템 트레이: %s", "활성(닫으면 트레이로)" if tray else "미지원(닫으면 종료)")
         try:
@@ -182,6 +185,33 @@ def run_app(config_path: str | None = None) -> int:
     _clear_instance_file()
     _release_single_instance(mutex_handle)
     return 0
+
+
+def _pick_path(webview, window, mode="folder", file_types=None) -> str | None:
+    """네이티브 폴더/파일 선택창을 열어 고른 경로를 돌려준다. 취소면 None."""
+    # pywebview 5.4+ 는 FileDialog.*, 이전은 *_DIALOG(deprecated) — 둘 다 대응.
+    fd = getattr(webview, "FileDialog", None)
+
+    def _open(ft):
+        if mode == "file":
+            dtype = fd.OPEN if fd else webview.OPEN_DIALOG
+            kwargs = {"file_types": tuple(ft)} if ft else {}
+            return window.create_file_dialog(dtype, **kwargs)
+        dtype = fd.FOLDER if fd else webview.FOLDER_DIALOG
+        return window.create_file_dialog(dtype)
+
+    try:
+        result = _open(file_types)
+    except Exception as e:  # noqa: BLE001  파일 필터 형식 문제면 필터 없이라도 연다
+        log.warning("경로 선택 다이얼로그(필터 %r) 실패 → 필터 없이 재시도: %s", file_types, e)
+        try:
+            result = _open(None)
+        except Exception as e2:  # noqa: BLE001
+            log.warning("경로 선택 다이얼로그 실패: %s", e2)
+            return None
+    if not result:
+        return None
+    return result[0] if isinstance(result, (list, tuple)) else str(result)
 
 
 def _setup_tray(webview, window, server) -> bool:
