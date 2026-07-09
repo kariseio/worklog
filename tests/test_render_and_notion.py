@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 
 from worklog.models import (
-    ActivityWatchData,
-    AppUsage,
     CalendarData,
     CalendarEvent,
     ClaudeData,
@@ -38,9 +36,6 @@ def _sample_data() -> DailyData:
                       files_edited=[r"D:\repo\auth.py"], commands=["pytest -q"],
                       tool_counts={"Edit": 1, "Bash": 1}, output_tokens=500),
     ])
-    d.activitywatch = ActivityWatchData(total_active_seconds=3600,
-                                        by_app=[AppUsage(app="Code.exe", seconds=3600,
-                                                         top_titles=["auth.py"])])
     return d
 
 
@@ -52,8 +47,6 @@ def test_render_facts_has_sections():
     assert "fix: login bug" in md
     assert "Claude Code 작업" in md
     assert "로그인 버그 수정" in md
-    assert "앱 사용 시간" in md
-    assert "1h 0m" in md  # 3600초
 
 
 def test_render_empty():
@@ -128,3 +121,41 @@ def test_rich_text_splits_long_text():
     rts = _rt(long)
     assert len(rts) >= 3
     assert all(len(r["text"]["content"]) <= 2000 for r in rts)
+
+
+def test_obsidian_refuses_to_overwrite_foreign_note(tmp_path):
+    from worklog.config import ObsidianOutputConfig
+    from worklog.models import WorkLog
+    from worklog.outputs.obsidian import ObsidianSink
+
+    vault = tmp_path / "vault"
+    (vault / "업무일지").mkdir(parents=True)
+    existing = vault / "업무일지" / "2026-07-06.md"
+    existing.write_text("# 내 데일리노트\n중요한 메모", encoding="utf-8")   # 우리 표식 없는 남의 노트
+
+    wl = WorkLog(target_date=date(2026, 7, 6), facts_markdown="",
+                 full_markdown="업무일지 본문", data=None, summary_markdown=None)
+    cfg = ObsidianOutputConfig(vault_dir=str(vault), subdir="업무일지")
+    res = ObsidianSink(cfg).write(wl)
+    assert not res.ok                                            # 남의 노트는 덮어쓰지 않음
+    assert "중요한 메모" in existing.read_text(encoding="utf-8")    # 원본 보존
+
+    existing.write_text("---\ndate: 2026-07-06\ntags: [업무일지]\n---\n\n이전본", encoding="utf-8")
+    res2 = ObsidianSink(cfg).write(wl)                           # 우리 업무일지면 정상 덮어씀
+    assert res2.ok
+    assert "업무일지 본문" in existing.read_text(encoding="utf-8")
+
+
+def test_notion_skips_details_and_tables():
+    from worklog.outputs.notion import markdown_to_blocks
+
+    md = "\n".join(["<details>", "<summary>원본</summary>",
+                    "| 프로젝트 | 커밋 |", "|---|---|", "| A | 3 |", "</details>"])
+    texts = []
+    for b in markdown_to_blocks(md):
+        rt = b.get(b["type"], {}).get("rich_text", [])
+        texts.append("".join(x["text"]["content"] for x in rt))
+    joined = " ".join(texts)
+    assert "<details>" not in joined and "<summary>" not in joined   # HTML 래퍼 리터럴 안 샘
+    assert "---" not in joined                                       # 표 구분선 제거
+    assert "A · 3" in joined                                         # 표 행은 가독 변환

@@ -50,10 +50,24 @@ class ObsidianSink(Sink):
             out_dir = vault / self.cfg.subdir if self.cfg.subdir else vault
             out_dir.mkdir(parents=True, exist_ok=True)
             path = out_dir / f"{worklog.target_date.isoformat()}.md"
+            # YYYY-MM-DD.md 는 옵시디언 데일리노트 파일명과 동일하다. subdir 가 비었거나
+            # 데일리노트 폴더를 가리키면 사용자의 실제 노트를 덮어쓸 수 있으므로, 기존 파일이
+            # '우리 업무일지'(frontmatter 표식)가 아니면 덮어쓰지 않는다.
+            marker = "tags: [업무일지]"
+            if path.exists():
+                try:
+                    existing = path.read_text(encoding="utf-8", errors="replace")[:400]
+                except OSError:
+                    existing = ""
+                if marker not in existing:
+                    return SinkResult.failure(
+                        self.name,
+                        f"같은 이름의 기존 노트({path.name})가 업무일지가 아니라 덮어쓰지 않았습니다. "
+                        f"outputs.obsidian.subdir 를 데일리노트와 다른 폴더로 지정하세요.")
             frontmatter = (
                 "---\n"
                 f"date: {worklog.target_date.isoformat()}\n"
-                "tags: [업무일지]\n"
+                f"{marker}\n"
                 "---\n\n"
             )
             path.write_text(frontmatter + worklog.full_markdown, encoding="utf-8")

@@ -10,6 +10,7 @@ provider:
 
 from __future__ import annotations
 
+import functools
 import logging
 import shutil
 import subprocess
@@ -39,8 +40,7 @@ SYSTEM_KO = (
     "**회의(📅)는 반드시 해당 시각에 명시**한다.\n"
     "## 📁 프로젝트별 — 프로젝트로 묶어, 그 프로젝트에서 (여러 세션에 걸쳐) 다룬 주요 주제·진행·"
     "완료를 개조식으로 정리한다. **굵은 프로젝트명** 아래. 한 프로젝트를 여러 세션에서 다뤘으면 "
-    "세션을 나누지 말고 합쳐서 정리하되, 필요하면 시간대를 괄호로 덧붙인다(예: (오전 노드제한, 오후 SSO)).\n"
-    "## 시간 사용 — 시간추적 데이터가 있을 때만 1줄.\n\n"
+    "세션을 나누지 말고 합쳐서 정리하되, 필요하면 시간대를 괄호로 덧붙인다(예: (오전 노드제한, 오후 SSO)).\n\n"
     "전체가 한눈에 들어오게. 문단 쓰지 말고 불릿만 써라."
 )
 
@@ -59,6 +59,12 @@ USER_TEMPLATE_KO = (
     "'시간대별 흐름'과 '프로젝트별 정리'를 담은 업무일지 본문만 출력하라. 원문을 그대로 나열하지 마라.\n\n"
     "---\n{signal}\n---\n"
 )
+
+
+@functools.lru_cache(maxsize=1)
+def _claude_exe() -> str | None:
+    """claude CLI 경로를 한 번만 조회(map-reduce 로 _call 이 수십 번 불려도 PATH 스캔 1회)."""
+    return shutil.which("claude")
 
 
 def _call(system: str, user: str, cfg: SummarizerConfig) -> str | None:
@@ -122,6 +128,11 @@ def summarize_day(signal: str, date_iso: str, cfg: SummarizerConfig,
     condensed = _map_condense(blocks, cfg)
     sess_md = "\n\n".join(f"### {lbl}\n{summ}" for lbl, summ in condensed if summ)
     new_signal = frame.rstrip() + "\n\n## Claude Code 세션 요약\n" + sess_md
+    if len(new_signal) > cfg.map_reduce_chars:
+        # 작은 세션이 많아 통과분만으로도 여전히 크면 전부 강제 압축(reduce 입력 폭주 방지).
+        condensed = _map_condense(blocks, cfg, force_all=True)
+        sess_md = "\n\n".join(f"### {lbl}\n{summ}" for lbl, summ in condensed if summ)
+        new_signal = frame.rstrip() + "\n\n## Claude Code 세션 요약\n" + sess_md
     return summarize(new_signal, date_iso, cfg, availability)
 
 
@@ -131,22 +142,24 @@ def _block_body(block: str) -> str:
     return (parts[1] if len(parts) > 1 else "").strip()
 
 
-def _map_condense(blocks, cfg: SummarizerConfig):
-    """세션 블록들을 병렬로 개별 압축. 작은 세션은 LLM 호출 없이 원문 유지, 큰 세션만 압축
-    (한 블록이 임계 초과면 조각내 2단 압축). 반환: [(라벨, 본문 요약), ...]."""
+def _map_condense(blocks, cfg: SummarizerConfig, force_all: bool = False):
+    """세션 블록들을 병렬로 개별 압축. force_all 이 아니면 작은 세션은 LLM 없이 원문 유지하고
+    큰 세션만 압축(임계 초과면 조각내 2단). force_all 이면 전부 압축(총량이 여전히 클 때).
+    반환: [(라벨, 본문 요약), ...]."""
     from concurrent.futures import ThreadPoolExecutor
 
     small = max(600, cfg.map_reduce_chars // 12)   # 이보다 작은 세션은 질답 원문 그대로
 
     def condense_one(item):
         lbl, block = item
-        if len(block) <= small:
+        if not force_all and len(block) <= small:
             return (lbl, _block_body(block))       # 작은 세션: 압축 없이 원문(호출 절약)
         big = block
         if len(big) > cfg.map_reduce_chars:
             big = _condense_chunks(lbl, big, cfg)
         summ = _call(CONDENSE_SYSTEM_KO, big, cfg)
-        return (lbl, (summ or _block_body(block)).strip())
+        # 최종 압축 실패 시엔 (원문 block 이 아니라) 이미 만든 조각요약 big 으로 폴백.
+        return (lbl, (summ or _block_body(big)).strip())
 
     if not blocks:
         return []
@@ -183,7 +196,7 @@ _KNOWN_PROVIDERS = {"none", "claude_cli", "anthropic_api"}
 
 def _resolve_provider(provider: str) -> str:
     if provider == "auto":
-        if shutil.which("claude"):
+        if _claude_exe():
             return "claude_cli"
         if _anthropic_available():
             return "anthropic_api"
@@ -202,7 +215,7 @@ def _resolve_provider(provider: str) -> str:
 def _summarize_cli(system: str, prompt: str, cfg: SummarizerConfig) -> str | None:
     from .render import WORKLOG_SENTINEL
 
-    exe = shutil.which("claude")
+    exe = _claude_exe()
     if not exe:
         log.warning("claude CLI 를 찾을 수 없어 요약을 건너뜁니다.")
         return None

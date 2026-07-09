@@ -50,7 +50,7 @@ _UPDATER_FLAGS = 0x08000000 | 0x00000200 if os.name == "nt" else 0
 # 재실행은 하지 않는다(모듈 docstring 참고) — 사용자가 앱을 직접 다시 연다.
 # ping 127.0.0.1 은 콘솔 없이 쓰는 표준 sleep 트릭(-n N = 약 N-1 초).
 _UPDATER_BAT = """@echo off
-for /l %%i in (1,1,40) do (
+for /l %%i in (1,1,90) do (
   move /y "%WL_NEW%" "%WL_EXE%" >nul 2>&1
   if not exist "%WL_NEW%" goto :done
   ping -n 2 127.0.0.1 >nul
@@ -123,16 +123,40 @@ def download_and_stage(download_url: str, timeout: float = 180.0) -> str:
 
     exe = os.path.abspath(sys.executable)
     new = exe + ".new"
-    with requests.get(download_url, stream=True, timeout=timeout) as r:
-        r.raise_for_status()
-        with open(new, "wb") as f:
-            for chunk in r.iter_content(65536):
-                if chunk:
-                    f.write(chunk)
-    if os.path.getsize(new) < 1_000_000:   # 정상 exe 는 수십 MB — 너무 작으면 이상
-        os.remove(new)
-        raise RuntimeError("다운로드 파일이 비정상적으로 작습니다.")
+    try:
+        with requests.get(download_url, stream=True, timeout=timeout) as r:
+            r.raise_for_status()
+            with open(new, "wb") as f:
+                for chunk in r.iter_content(65536):
+                    if chunk:
+                        f.write(chunk)
+        if os.path.getsize(new) < 1_000_000:   # 정상 exe 는 수십 MB — 너무 작으면 이상
+            raise RuntimeError("다운로드 파일이 비정상적으로 작습니다.")
+    except Exception:
+        # 중단/오류 시 부분 파일을 남기지 않는다(다음 시작 때 clean_leftover_staged 도 정리).
+        try:
+            os.remove(new)
+        except OSError:
+            pass
+        raise
     return new
+
+
+def clean_leftover_staged() -> None:
+    """시작 시 남아있는 `<exe>.new`(지난 교체 실패/부분 다운로드 잔재)를 정리한다.
+
+    정상 흐름에선 교체 직후 소비되므로, 시작 시점에 존재하면 지난 교체가 실패한 것.
+    구버전/부분 파일일 수 있어 자동 적용하지 않고 안전하게 삭제한다(사용자가 다시 업데이트).
+    """
+    if not is_frozen():
+        return
+    new = os.path.abspath(sys.executable) + ".new"
+    try:
+        if os.path.exists(new):
+            os.remove(new)
+            log.info("지난 업데이트 교체 실패로 남은 파일 정리: %s", new)
+    except OSError:
+        pass
 
 
 def cleanup_stale_extractions() -> int:

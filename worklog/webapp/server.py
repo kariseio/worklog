@@ -146,8 +146,8 @@ def create_app(config_path: str | None = None) -> "FastAPI":
             "summarizer": {"provider": c.summarizer.provider, "model": c.summarizer.model},
             "outputs": {
                 "markdown": c.outputs.markdown.enabled,
-                "obsidian": bool(c.outputs.obsidian.vault_dir),
-                "notion": bool(c.outputs.notion.token and c.outputs.notion.parent_id),
+                "obsidian": bool(c.outputs.obsidian.enabled and c.outputs.obsidian.vault_dir),
+                "notion": bool(c.outputs.notion.enabled and c.outputs.notion.token and c.outputs.notion.parent_id),
             },
         }
 
@@ -337,7 +337,6 @@ def create_app(config_path: str | None = None) -> "FastAPI":
                 "scan_roots": c.git.scan_roots,
                 "scan_depth": c.git.scan_depth,
             },
-            "activitywatch": {"enabled": c.activitywatch.enabled, "base_url": c.activitywatch.base_url},
             "claude": {"enabled": c.claude.enabled},
             "markdown": {"enabled": c.outputs.markdown.enabled, "dir": md_dir},
             "paths": {"settings_file": str(app_settings_path()), "save_dir": md_dir},
@@ -414,12 +413,6 @@ def create_app(config_path: str | None = None) -> "FastAPI":
             g["author"] = ""                # 앱: 작성자 필터 없음(내 커밋으로 간주)
             g["include_claude_cwds"] = True  # 앱: Claude 작업 폴더 항상 자동 포함
             # repos 는 앱에서 관리하지 않음 → 기존 값(config/CLI) 보존
-        aw = body.get("activitywatch")
-        if isinstance(aw, dict):
-            srcs.setdefault("activitywatch", {}).update({
-                "enabled": bool(aw.get("enabled", True)),
-                "base_url": aw.get("base_url", "http://localhost:5600"),
-            })
         cl = body.get("claude")
         if isinstance(cl, dict):
             srcs.setdefault("claude", {})["enabled"] = bool(cl.get("enabled", True))

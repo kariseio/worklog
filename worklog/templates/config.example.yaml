@@ -11,13 +11,6 @@ timezone: Asia/Seoul
 include_raw_data: false
 
 sources:
-  # --- ActivityWatch: 앱/창 사용 시간 ---
-  activitywatch:
-    enabled: true
-    base_url: http://localhost:5600   # 로컬 aw-server. 미실행이면 자동으로 건너뜀.
-    min_seconds: 60                   # 이 시간 미만으로 쓴 앱은 무시
-    top_n: 20                         # 상위 N개 앱만 표시
-
   # --- Git: 그날의 커밋 ---
   git:
     enabled: true
@@ -40,6 +33,8 @@ sources:
     projects_dir: ""                  # 비우면 ~/.claude/projects
     include_read: false               # Read(읽기 전용) 파일도 집계할지
     max_intent_len: 300               # 세션 의도(첫 프롬프트) 표시 최대 길이
+    max_qa_turns: 120                 # 세션당 수집할 질답 수 상한(초과 시 최근 것 유지)
+    max_answer_len: 180               # 질답의 '답' 요지 최대 길이
 
   # --- NaverWorks 캘린더: 그날의 일정/회의 ---
   naverworks:
@@ -58,6 +53,8 @@ summarizer:
   model: claude-opus-4-8
   language: ko
   max_tokens: 4000
+  map_reduce_chars: 20000             # 세션 질답 총량이 이보다 크면 세션별 요약→종합(map-reduce)
+  map_workers: 4                      # map-reduce 시 세션 병렬 요약 수
 
 # --- 출력: 여러 곳에 동시에 내보낼 수 있음 ---
 outputs:
@@ -76,4 +73,4 @@ outputs:
     parent_type: page                 # page | database
     parent_id: ""                     # 부모 page_id 또는 database_id
     title_prop: Name                  # database 일 때 제목 속성 이름
-    version: "2026-03-11"             # Notion-Version 헤더
+    version: "2022-06-28"             # Notion-Version 헤더(공식 안정 버전)

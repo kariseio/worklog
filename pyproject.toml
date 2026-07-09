@@ -1,7 +1,7 @@
 [project]
 name = "worklog-generator"
 version = "0.1.15"
-description = "ActivityWatch + Git + Claude Code 로그 + NaverWorks 캘린더를 종합해 업무일지를 만드는 생성기"
+description = "Git + Claude Code 로그 + NaverWorks 캘린더를 종합해 업무일지를 만드는 생성기"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "kariseio" }]
@@ -17,8 +17,6 @@ dependencies = [
 [project.optional-dependencies]
 # Anthropic SDK 기반 요약기를 쓸 때만 필요. 기본 요약기는 설치된 `claude` CLI를 사용하므로 없어도 동작함.
 llm = ["anthropic>=0.40"]
-# ActivityWatch 공식 클라이언트를 쓰고 싶을 때(선택). 기본은 REST 직접 호출.
-aw = ["aw-client>=0.5"]
 # 데스크톱 앱(GUI) 실행에 필요. pywebview 가 없으면 브라우저로 폴백.
 # pystray/pillow 는 시스템 트레이(닫으면 트레이로)용 — 없으면 닫기=종료로 동작.
 app = ["fastapi>=0.110", "uvicorn>=0.27", "pywebview>=5.0", "pystray>=0.19", "pillow>=10.0"]

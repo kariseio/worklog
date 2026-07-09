@@ -89,6 +89,66 @@ def test_session_blocks_include_all_topics():
     assert sec.rstrip().split("\n", 1)[0] == S.SESSION_SECTION_HEADER
 
 
+def test_real_user_text_filters_synthetic():
+    from worklog.collectors.claude_logs import _real_user_text
+
+    def rec(txt):
+        return {"type": "user", "message": {"content": txt}}
+
+    assert _real_user_text(rec("진짜 질문입니다")) == "진짜 질문입니다"
+    assert _real_user_text(rec("<local-command-stdout>출력</local-command-stdout>")) is None
+    assert _real_user_text(rec("<command-message>foo</command-message>")) is None
+    assert _real_user_text(rec("<system-reminder>x</system-reminder>")) is None
+
+
+@pytest.mark.skipif(ZoneInfo is None, reason="zoneinfo 필요")
+def test_qa_cap_keeps_recent_not_head(tmp_path):
+    tz = ZoneInfo("Asia/Seoul")
+    recs = []
+    for i in range(5):
+        recs.append({"type": "user", "sessionId": "s1", "cwd": "/home/u/proj",
+                     "timestamp": f"2026-07-08T0{i + 1}:00:00Z", "message": {"content": f"주제{i}"}})
+        recs.append({"type": "assistant", "timestamp": f"2026-07-08T0{i + 1}:00:05Z",
+                     "message": {"content": [{"type": "text", "text": f"답{i}"}], "usage": {"output_tokens": 1}}})
+    ctx = _ctx(tz)
+    projects = _write_session(tmp_path, recs, ctx.start.timestamp())
+    res = ClaudeLogCollector(ClaudeConfig(projects_dir=projects, max_qa_turns=3)).collect(ctx)
+    s = res.data.sessions[0]
+    assert len(s.qa) == 3 and s.qa_dropped == 2
+    assert [t.question for t in s.qa] == ["주제2", "주제3", "주제4"]   # 최근 것 유지(하루 끝 보존)
+    assert s.intent == "주제0"                                      # 서두는 intent 로 보존
+
+
+@pytest.mark.skipif(ZoneInfo is None, reason="zoneinfo 필요")
+def test_delimiter_in_title_does_not_fracture_block():
+    tz = ZoneInfo("Asia/Seoul")
+    # ai-title 없음 → intent 가 제목이 되고, intent 에 map-reduce 구분자 "\n\n### " 포함
+    s = ClaudeSession(session_id="s1", project="proj", cwd="/p", git_branch=None,
+                      title=None, intent="리뷰\n\n### 대상 정리",
+                      qa=[QATurn(time="10:00", question="q", answer="a")])
+    data = DailyData(target_date=date(2026, 7, 8), tz_name="Asia/Seoul",
+                     claude=ClaudeData(sessions=[s]))
+    blocks = render_session_blocks(data, tz)
+    _, block = blocks[0]
+    assert "\n\n### " not in block                     # 구조선에 구분자 주입 안 됨
+    body = render_session_section(blocks).split(S.SESSION_SECTION_HEADER, 1)[1].strip()
+    assert len(body.split("\n\n### ")) == 1            # 세션 1개 → 오분할 없음
+
+
+def test_condense_chunks_for_oversized_session(monkeypatch):
+    calls = []
+    monkeypatch.setattr(S, "_resolve_provider", lambda p: "claude_cli")
+    monkeypatch.setattr(S, "_call", lambda sy, u, c: (calls.append(sy), "요약")[1])
+    cfg = SummarizerConfig(provider="claude_cli", map_reduce_chars=1500, map_workers=1)
+    line = "- 10:00 Q: 어떤 긴 질문입니다 → A: 어떤 긴 답변입니다\n"
+    big = "### [p] s1\n" + line * 200          # ~ 8k자 > map_reduce_chars → _condense_chunks 발동
+    signal = "## Git\n- x\n\n" + S.SESSION_SECTION_HEADER + "\n" + big
+    out = S.summarize_day(signal, "2026-07-08", cfg)
+    assert out == "요약"
+    assert calls.count(S.CONDENSE_SYSTEM_KO) >= 2     # 청크별 압축 여러 번
+    assert calls[-1] == S.SYSTEM_KO                    # 마지막은 종합
+
+
 def test_summarize_day_single_call(monkeypatch):
     calls = []
     monkeypatch.setattr(S, "_resolve_provider", lambda p: "claude_cli")

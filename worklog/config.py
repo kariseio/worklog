@@ -29,14 +29,6 @@ except ImportError:  # pragma: no cover
 
 
 @dataclass
-class ActivityWatchConfig:
-    enabled: bool = True
-    base_url: str = "http://localhost:5600"
-    min_seconds: int = 60
-    top_n: int = 20
-
-
-@dataclass
 class GitConfig:
     enabled: bool = True
     repos: list[str] = field(default_factory=list)
@@ -159,7 +151,7 @@ class NotionOutputConfig:
     parent_type: str = "page"    # page | database
     parent_id: str = ""
     title_prop: str = "Name"
-    version: str = "2026-03-11"
+    version: str = "2022-06-28"   # 공식 안정 Notion-Version (미검증 미래 날짜는 400 유발)
     token: str = ""              # .env: NOTION_TOKEN
 
 
@@ -174,7 +166,6 @@ class OutputsConfig:
 class Config:
     timezone: str = "Asia/Seoul"
     include_raw_data: bool = False   # 저장 파일에 '수집 데이터 원본' 부록 포함 여부
-    activitywatch: ActivityWatchConfig = field(default_factory=ActivityWatchConfig)
     git: GitConfig = field(default_factory=GitConfig)
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     naverworks: NaverWorksConfig = field(default_factory=NaverWorksConfig)
@@ -219,7 +210,6 @@ def load_config(config_path: str | None = None) -> Config:
     _apply(cfg, {"timezone": raw.get("timezone"), "include_raw_data": raw.get("include_raw_data")})
 
     sources = raw.get("sources") or {}
-    _apply(cfg.activitywatch, sources.get("activitywatch"))
     _apply(cfg.git, sources.get("git"))
     _apply(cfg.claude, sources.get("claude"))
     _apply(cfg.naverworks, sources.get("naverworks"))
@@ -327,7 +317,6 @@ def _apply_app_settings(cfg: Config, store: dict) -> None:
     _apply(cfg.summarizer, store.get("summarizer"))
 
     sources = store.get("sources") or {}
-    _apply(cfg.activitywatch, sources.get("activitywatch"))
     _apply(cfg.git, sources.get("git"))
     _apply(cfg.claude, sources.get("claude"))
     _apply_nonempty(cfg.naverworks, sources.get("naverworks"))

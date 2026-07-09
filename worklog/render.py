@@ -19,7 +19,6 @@ def render_facts(data: DailyData, tz) -> str:
     _calendar(lines, data, tz)
     _git(lines, data)
     _claude(lines, data)
-    _activitywatch(lines, data)
 
     if data.warnings:
         lines.append("## ⚠️ 수집 경고")
@@ -107,20 +106,6 @@ def _claude(lines, data):
         if s.commands:
             for cmd in s.commands[:5]:
                 lines.append(f"    - `$ {cmd}`")
-    lines.append("")
-
-
-def _activitywatch(lines, data):
-    aw = data.activitywatch
-    lines.append("## ⏱️ 앱 사용 시간 (ActivityWatch)")
-    if not aw or not aw.by_app:
-        lines.append("- (데이터 없음 또는 미설치)")
-        lines.append("")
-        return
-    lines.append(f"- 총 활성 시간 **{human_duration(aw.total_active_seconds)}**")
-    for app in aw.by_app:
-        titles = f" — {app.top_titles[0]}" if app.top_titles else ""
-        lines.append(f"- {human_duration(app.seconds)}  {app.app}{titles}")
     lines.append("")
 
 
@@ -282,12 +267,6 @@ def render_work_signal(data: DailyData, tz, header: str = "") -> str:
             lines.append(f"- {when} {e.title or ''}{loc}")
         lines.append("")
 
-    if data.activitywatch and data.activitywatch.by_app:
-        top = data.activitywatch.by_app[:6]
-        lines.append("## 앱 사용 시간 (상위)")
-        lines.append("- " + ", ".join(f"{a.app} {human_duration(a.seconds)}" for a in top))
-        lines.append("")
-
     body = "\n".join(lines).strip()
     return (body + "\n") if body else ""
 
@@ -305,10 +284,15 @@ def render_session_blocks(data, tz, max_files: int = 8) -> list[tuple[str, str]]
         if _is_meta_session(s):
             continue
         proj = s.project or "?"
+        # 제목/의도는 원본 사용자 텍스트라 개행을 품을 수 있다. 구조선(### 헤더, 요청)에
+        # 그대로 넣으면 map-reduce 파서의 블록 구분자 "\n\n### " 를 주입해 오분할되므로 접는다.
         title = (s.title or "").strip() or (s.intent or "").strip()[:60] or "(제목 없음)"
+        title = " ".join(title.split())
         span = f" {fmt_time(s.first_ts, tz)}–{fmt_time(s.last_ts, tz)}" if (s.first_ts and s.last_ts) else ""
         lines = [f"### [{proj}] {title}{span}"]
         if s.qa:
+            if s.qa_dropped:   # tail 유지라 생략분은 '앞부분'
+                lines.append(f"- (앞부분 질답 {s.qa_dropped}개 생략)")
             for turn in s.qa:
                 q = " ".join((turn.question or "").split())
                 a = " ".join((turn.answer or "").split())
@@ -316,10 +300,8 @@ def render_session_blocks(data, tz, max_files: int = 8) -> list[tuple[str, str]]
                 if a:
                     seg += f" → A: {a}"
                 lines.append(seg)
-            if s.qa_dropped:
-                lines.append(f"- (이후 질답 {s.qa_dropped}개 생략)")
         elif s.intent:
-            lines.append(f"- 요청: {s.intent}")
+            lines.append("- 요청: " + " ".join(s.intent.split()))
         if s.files_edited:
             shown = s.files_edited[:max_files]
             more = f" 외 {len(s.files_edited) - len(shown)}개" if len(s.files_edited) > len(shown) else ""

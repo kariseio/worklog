@@ -14,14 +14,12 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 
-from .collectors.activitywatch import ActivityWatchCollector
 from .collectors.base import CollectContext
 from .collectors.claude_logs import ClaudeLogCollector
 from .collectors.git_repos import GitCollector
 from .collectors.naverworks import NaverWorksCollector
 from .config import Config
 from .models import (
-    ActivityWatchData,
     CalendarData,
     ClaudeData,
     DailyData,
@@ -42,11 +40,11 @@ from .render import (
     render_work_signal,
 )
 from .summarize import summarize_day
-from .util import get_tz, human_duration, resolve_day
+from .util import get_tz, resolve_day
 
 log = logging.getLogger("worklog")
 
-ALL_SOURCES = {"activitywatch", "git", "claude", "naverworks"}
+ALL_SOURCES = {"git", "claude", "naverworks"}
 
 
 @dataclass
@@ -80,7 +78,6 @@ def make_context(cfg: Config, date_str: str | None) -> tuple[CollectContext, obj
 def enabled_sources(cfg: Config, sources_arg: str | list[str] | None) -> set[str]:
     result = {
         name for name, on in [
-            ("activitywatch", cfg.activitywatch.enabled),
             ("git", cfg.git.enabled),
             ("claude", cfg.claude.enabled),
             ("naverworks", cfg.naverworks.enabled),
@@ -108,7 +105,6 @@ def collect(cfg: Config, ctx: CollectContext, sources: set[str]) -> tuple[DailyD
     counters = {
         "claude": lambda d: d.total_sessions if d else 0,
         "git": lambda d: len(d.commits) if d else 0,
-        "activitywatch": lambda d: len(d.by_app) if d else 0,
         "naverworks": lambda d: len(d.events) if d else 0,
     }
 
@@ -125,13 +121,11 @@ def collect(cfg: Config, ctx: CollectContext, sources: set[str]) -> tuple[DailyD
             data.claude = res.data
             claude_cwds = res.data.cwds
 
-    # 2) git · activitywatch · naverworks 는 서로 독립 → 병렬 실행
-    #    (느린 git 이 네트워크 붙는 aw/naverworks 와 시간상 겹쳐 돈다)
+    # 2) git · naverworks 는 서로 독립 → 병렬 실행
+    #    (느린 git 이 네트워크 붙는 naverworks 와 시간상 겹쳐 돈다)
     parallel: list[tuple[str, object]] = []
     if "git" in sources:
         parallel.append(("git", GitCollector(cfg.git, extra_repos=claude_cwds)))
-    if "activitywatch" in sources:
-        parallel.append(("activitywatch", ActivityWatchCollector(cfg.activitywatch)))
     if "naverworks" in sources:
         parallel.append(("naverworks", NaverWorksCollector(cfg.naverworks)))
 
@@ -139,14 +133,12 @@ def collect(cfg: Config, ctx: CollectContext, sources: set[str]) -> tuple[DailyD
         _assign(name, res)
         if name == "git" and isinstance(res.data, GitData):
             data.git = res.data
-        elif name == "activitywatch" and isinstance(res.data, ActivityWatchData):
-            data.activitywatch = res.data
         elif name == "naverworks" and isinstance(res.data, CalendarData):
             data.calendar = res.data
 
     disambiguate_repo_names(data)
 
-    order = ["git", "claude", "activitywatch", "naverworks"]
+    order = ["git", "claude", "naverworks"]
     return data, [statuses[n] for n in order]
 
 
@@ -267,18 +259,21 @@ def availability_line(cfg: Config, statuses: list[SourceStatus]) -> str:
     icon = {"ok": "✅", "skipped": "❌", "error": "⚠️", "disabled": "❌"}
     src_label = {
         "git": "Git", "claude": "Claude",
-        "naverworks": "캘린더(NaverWorks)", "activitywatch": "시간추적(ActivityWatch)",
+        "naverworks": "캘린더(NaverWorks)",
     }
-    order = {"git": 0, "claude": 1, "naverworks": 2, "activitywatch": 3}
+    order = {"git": 0, "claude": 1, "naverworks": 2}
     src = []
     for s in sorted(statuses, key=lambda x: order.get(x.name, 9)):
         cnt = f"({s.count})" if s.state == "ok" and s.count else ""
         src.append(f"{src_label.get(s.name, s.name)} {icon.get(s.state, '?')}{cnt}")
 
+    # 실제 저장은 .enabled 로 결정되므로(save() 와 일치), '켜짐 그리고 설정됨'을 기준으로 표기.
+    ob = cfg.outputs.obsidian
+    no = cfg.outputs.notion
     out = [
         f"로컬 md {'✅' if cfg.outputs.markdown.enabled else '❌'}",
-        f"Obsidian {'✅' if cfg.outputs.obsidian.vault_dir else '❌'}",
-        f"Notion {'✅' if (cfg.outputs.notion.token and cfg.outputs.notion.parent_id) else '❌'}",
+        f"Obsidian {'✅' if (ob.enabled and ob.vault_dir) else '❌'}",
+        f"Notion {'✅' if (no.enabled and no.token and no.parent_id) else '❌'}",
     ]
     return "수집 소스: " + " · ".join(src) + "\n저장 대상: " + " · ".join(out)
 
@@ -400,7 +395,7 @@ def read_saved(cfg: Config, date_str: str) -> str | None:
 def to_evidence(data: DailyData, tz) -> dict:
     from .util import fmt_time, parse_iso
 
-    ev: dict = {"git": [], "claude": [], "calendar": [], "activitywatch": []}
+    ev: dict = {"git": [], "claude": [], "calendar": []}
 
     if data.git:
         for c in data.git.commits:
@@ -423,12 +418,5 @@ def to_evidence(data: DailyData, tz) -> dict:
             ev["calendar"].append({
                 "title": e.title, "when": when, "location": e.location,
                 "attendees": len(e.attendees),
-            })
-    if data.activitywatch:
-        ev["activitywatch_total"] = human_duration(data.activitywatch.total_active_seconds)
-        for a in data.activitywatch.by_app:
-            ev["activitywatch"].append({
-                "app": a.app, "duration": human_duration(a.seconds),
-                "title": a.top_titles[0] if a.top_titles else None,
             })
     return ev

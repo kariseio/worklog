@@ -109,6 +109,7 @@ class ClaudeLogCollector(Collector):
         # 프로즈를 '답 요지'로 묶는다.
         qa_turns: list[QATurn] = []
         cur_qa: dict | None = None
+        carry: dict | None = None   # 자정을 넘긴 답을 위해 직전(전날 포함) 사용자 프롬프트 보관
 
         def _flush_qa():
             nonlocal cur_qa
@@ -132,6 +133,13 @@ class ClaudeLogCollector(Collector):
             if t == "ai-title" and o.get("aiTitle"):
                 s.title = o["aiTitle"]
 
+            if t == "user":   # 날짜 무관: 마지막 사용자 프롬프트 기억(자정 연속 대비)
+                _utxt = _real_user_text(o)
+                if _utxt:
+                    _uts = parse_iso(o.get("timestamp"))
+                    carry = {"time": _uts.astimezone(tz).strftime("%H:%M") if _uts else "",
+                             "q": _utxt[: self.cfg.max_intent_len]}
+
             d = local_date(o)
             if d != target:
                 continue
@@ -152,6 +160,11 @@ class ClaudeLogCollector(Collector):
                     if not s.intent:
                         s.intent = txt[: self.cfg.max_intent_len]
             elif t == "assistant":
+                if cur_qa is None and carry is not None:
+                    # 전날 밤 프롬프트의 답이 자정을 넘겨 오늘 시작되는 경우, 그 질문을 이어붙임.
+                    cur_qa = {"time": carry["time"], "q": carry["q"], "a": []}
+                    if not s.intent:
+                        s.intent = carry["q"]
                 msg = o.get("message", {}) or {}
                 usage = msg.get("usage", {}) or {}
                 s.output_tokens += int(usage.get("output_tokens", 0) or 0)
@@ -159,7 +172,9 @@ class ClaudeLogCollector(Collector):
                     if not isinstance(b, dict):
                         continue
                     if b.get("type") == "text" and b.get("text") and cur_qa is not None:
-                        cur_qa["a"].append(b["text"])   # '답' 요지용 프로즈
+                        # 답 요지는 flush 때 max_answer_len 로 자르므로 그 이상은 안 모은다(메모리).
+                        if sum(len(p) for p in cur_qa["a"]) < self.cfg.max_answer_len * 3:
+                            cur_qa["a"].append(b["text"])   # '답' 요지용 프로즈
                         continue
                     if b.get("type") != "tool_use":
                         continue
@@ -180,7 +195,9 @@ class ClaudeLogCollector(Collector):
         _flush_qa()
         if len(qa_turns) > self.cfg.max_qa_turns:
             s.qa_dropped = len(qa_turns) - self.cfg.max_qa_turns
-            qa_turns = qa_turns[: self.cfg.max_qa_turns]
+            # 앞이 아니라 '최근' 질답을 유지 — 하루 끝(완료 결과)이 버려지지 않게.
+            # 세션 서두는 s.intent(첫 프롬프트)로 이미 커버된다.
+            qa_turns = qa_turns[-self.cfg.max_qa_turns:]
         s.qa = qa_turns
 
         s.files_edited = sorted(files_edited)
@@ -214,6 +231,9 @@ def _real_user_text(o: dict) -> str | None:
     else:
         return None
     text = (text or "").strip()
-    if not text or text.startswith("<command-name>") or text.startswith("<system-reminder>"):
+    # 시스템/슬래시명령이 주입한 합성 user 레코드(도구·명령 출력)는 사람 입력이 아니므로 제외.
+    _SYNTH = ("<command-name>", "<command-message>", "<command-args>",
+              "<local-command-stdout>", "<system-reminder>")
+    if not text or text.startswith(_SYNTH):
         return None
     return text

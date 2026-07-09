@@ -34,11 +34,14 @@ def _acquire_single_instance():
         return True, None
     try:
         import ctypes
-        handle = ctypes.windll.kernel32.CreateMutexW(None, False, _MUTEX_NAME)
-        already = ctypes.windll.kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+        # use_last_error=True + get_last_error(): CreateMutexW 직후의 GetLastError 를
+        # ctypes 내부 활동이 덮어쓰기 전에 안전하게 읽는 표준 패턴(windll.GetLastError 는 취약).
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = k32.CreateMutexW(None, False, _MUTEX_NAME)
+        already = ctypes.get_last_error() == 183  # ERROR_ALREADY_EXISTS
         if already:
             if handle:
-                ctypes.windll.kernel32.CloseHandle(handle)
+                k32.CloseHandle(handle)
             return False, None
         return True, handle
     except Exception:  # noqa: BLE001
@@ -120,18 +123,26 @@ def run_app(config_path: str | None = None) -> int:
         _focus_existing()
         return 0
 
-    # 이전 실행에서 남은 onefile 임시 추출폴더(%TEMP%\\_MEIxxxxxx) 정리 — 비차단·best-effort.
-    try:
-        from ..update import cleanup_stale_extractions
-        threading.Thread(target=cleanup_stale_extractions, daemon=True).start()
-    except Exception:  # noqa: BLE001
-        pass
+    # 시작 정리 — 남은 onefile 임시폴더(%TEMP%\\_MEIxxxxxx)와 지난 교체 실패 잔재(<exe>.new)를
+    # 비차단·best-effort 로 정리.
+    def _startup_cleanup():
+        try:
+            from ..update import clean_leftover_staged, cleanup_stale_extractions
+            clean_leftover_staged()
+            cleanup_stale_extractions()
+        except Exception:  # noqa: BLE001
+            pass
+    threading.Thread(target=_startup_cleanup, daemon=True).start()
 
     from .server import create_app, set_show_callback
 
     app = create_app(config_path)
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
+
+    # 두 번째 실행이 /api/show 로 이 창을 앞으로 부를 수 있게, 포트를 '서버 대기 전에' 먼저 기록.
+    # (15초 대기 창 동안 두번째 실행이 stale/부재 포트를 보는 것을 줄임)
+    _write_instance_file(port)
 
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
@@ -141,10 +152,10 @@ def run_app(config_path: str | None = None) -> int:
     if not _wait_until_up(url):
         print("로컬 서버 시작 실패")
         server.should_exit = True
+        _clear_instance_file()
         _release_single_instance(mutex_handle)
         return 1
 
-    _write_instance_file(port)   # 두 번째 실행이 이 포트로 /api/show 호출
     log.info("업무일지 앱: %s", url)
 
     # 1순위: pywebview 자체 창. 미설치(ImportError)거나 GUI 초기화 실패면 브라우저로 폴백.

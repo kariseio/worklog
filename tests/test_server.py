@@ -22,7 +22,6 @@ def client(tmp_path, monkeypatch):
         "sources:\n"
         "  git: {enabled: true}\n"
         "  claude: {enabled: false}\n"
-        "  activitywatch: {enabled: false}\n"
         "  naverworks: {enabled: false}\n"
         "outputs:\n"
         f"  markdown: {{enabled: true, dir: {out.as_posix()}}}\n",

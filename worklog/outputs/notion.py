@@ -192,6 +192,15 @@ def markdown_to_blocks(md: str) -> list:
             # 들여쓰기 bullet 도 평면 bullet 으로 (2단계 이상 중첩은 단순화)
             text = re.sub(r"^\s*[-*] ", "", line)
             blocks.append(_bullet(text))
+        elif stripped in ("<details>", "</details>") or stripped.startswith("<summary"):
+            continue   # 데이터 접기 HTML 래퍼는 Notion 에서 리터럴 텍스트로 새므로 버린다
+        elif stripped.startswith("|") and stripped.endswith("|") and len(stripped) > 1:
+            # GFM 표: 구분선(|---|)은 버리고, 데이터 행은 셀을 ' · ' 로 이어 가독 문단으로.
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            nonempty = [c for c in cells if c]
+            if nonempty and all(re.fullmatch(r":?-{2,}:?", c) for c in nonempty):
+                continue
+            blocks.append(_paragraph(" · ".join(nonempty)))
         else:
             blocks.append(_paragraph(stripped))
 

@@ -10,27 +10,6 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 # --------------------------------------------------------------------------- #
-# ActivityWatch
-# --------------------------------------------------------------------------- #
-
-
-@dataclass
-class AppUsage:
-    """한 애플리케이션의 활성 사용 시간."""
-
-    app: str
-    seconds: float
-    top_titles: list[str] = field(default_factory=list)
-
-
-@dataclass
-class ActivityWatchData:
-    total_active_seconds: float = 0.0
-    by_app: list[AppUsage] = field(default_factory=list)
-    hostname: str | None = None
-
-
-# --------------------------------------------------------------------------- #
 # Git
 # --------------------------------------------------------------------------- #
 
@@ -106,10 +85,6 @@ class ClaudeData:
     sessions: list[ClaudeSession] = field(default_factory=list)
 
     @property
-    def total_output_tokens(self) -> int:
-        return sum(s.output_tokens for s in self.sessions)
-
-    @property
     def total_sessions(self) -> int:
         return len(self.sessions)
 
@@ -152,7 +127,6 @@ class CalendarData:
 class DailyData:
     target_date: date
     tz_name: str
-    activitywatch: ActivityWatchData | None = None
     git: GitData | None = None
     claude: ClaudeData | None = None
     calendar: CalendarData | None = None
@@ -165,8 +139,6 @@ class DailyData:
         if self.git and self.git.commits:
             return False
         if self.claude and self.claude.sessions:
-            return False
-        if self.activitywatch and self.activitywatch.by_app:
             return False
         return True
 

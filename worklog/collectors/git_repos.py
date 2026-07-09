@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from pathlib import Path
 
 from ..config import GitConfig
@@ -146,7 +147,8 @@ class GitCollector(Collector):
         cmd = [
             "git", "-C", repo, "log", "--branches", "HEAD", "--no-merges",
             f"--since={ctx.start.isoformat()}",
-            f"--until={ctx.end.isoformat()}",
+            # git --until 은 '포함'이라 다음날 00:00 커밋이 양일에 이중집계됨 → 1초 당겨 [start, end) 로.
+            f"--until={(ctx.end - timedelta(seconds=1)).isoformat()}",
             "--numstat", f"--pretty=format:{pretty}",
         ]
         if self.cfg.author:
