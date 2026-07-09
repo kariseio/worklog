@@ -9,6 +9,7 @@
   원격 배포는 태그(`vX.Y.Z`)에 맞춰 **GitHub Releases** 에 첨부하는 방식을 권장.
 
 ## 버전 목록
+- `worklog-0.1.18.exe` — v0.1.18 (**수집 누락 보완 + 오삭제 수정** — 원격전용 커밋 회수[--remotes]·여러 git 신원 설정 UI[계정 테이블]·Claude 하위폴더 cwd→저장소 발견·CLAUDE_CONFIG_DIR 지원·자동요약 세션 필터 오검출로 진짜 세션 삭제되던 것 수정)
 - `worklog-0.1.17.exe` — v0.1.17 (**git 수집을 '내 커밋만'으로** — 저장소 git user.email 의 핸들 기준 자동 --author 필터, 도메인 무관[회사·개인·github]. 브랜치 전체에 섞이던 팀원 커밋 제외)
 - `worklog-0.1.16.exe` — v0.1.16 (**세션 질답 기반 요약 전면 전환**[시간대별 흐름 + 프로젝트별, 무거운 날 map-reduce] · **ActivityWatch 완전 제거** · **전체 코드리뷰 개선 22건**[map-reduce 견고화·Obsidian 덮어쓰기 보호·Notion 변환·자동업데이트 정리·런처 강화 등])
 - `worklog-0.1.15.exe` — v0.1.15 (0.1.14 의 apply→finalize + 확인 알림 흐름을 0.1.14→0.1.15 실제 업데이트로 검증하기 위한 타깃. 코드는 0.1.14 와 동일)
