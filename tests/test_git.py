@@ -59,6 +59,42 @@ def test_collects_todays_commit(tmp_path):
     assert c.repo == "repo"
 
 
+def test_only_my_commits_across_domains(tmp_path):
+    import os
+
+    from worklog.collectors.git_repos import _author_filter
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "myhandle@example.com")   # 내 핸들 = myhandle
+    _git(repo, "config", "user.name", "Me")
+
+    today = datetime.now(get_tz("Asia/Seoul"))
+    iso = today.replace(microsecond=0).isoformat()
+    base = dict(os.environ, GIT_AUTHOR_DATE=iso, GIT_COMMITTER_DATE=iso)
+
+    def commit(msg, email=None, name="X"):
+        e = dict(base)
+        if email:
+            e.update(GIT_AUTHOR_EMAIL=email, GIT_COMMITTER_EMAIL=email,
+                     GIT_AUTHOR_NAME=name, GIT_COMMITTER_NAME=name)
+        (repo / (msg + ".txt")).write_text("x\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", msg],
+                       check=True, capture_output=True, text=True, env=e)
+
+    commit("mine")                                          # 설정 신원(myhandle@example.com)
+    commit("mine_otherdomain", email="myhandle@other.org", name="Me")   # 같은 핸들·다른 도메인
+    commit("teammate", email="team@x.com", name="Teammate")             # 남
+
+    _author_filter.cache_clear()
+    res = GitCollector(GitConfig(repos=[str(repo)])).collect(_ctx(today.date()))
+    got = {c.subject for c in res.data.commits}
+    assert got == {"mine", "mine_otherdomain"}              # 도메인 달라도 내 핸들이면 잡고, 팀원은 제외
+    assert _author_filter(str(repo)) == "myhandle@"         # '핸들@' 패턴
+
+
 def test_uses_committer_date_not_author(tmp_path):
     """amend/rebase 처럼 저자날짜(어제)≠커밋날짜(오늘)면 커밋날짜 기준으로 잡히고 표시돼야."""
     import os

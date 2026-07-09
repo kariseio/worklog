@@ -35,6 +35,7 @@ class GitConfig:
     scan_roots: list[str] = field(default_factory=list)
     scan_all_drives: bool = False   # True 면 scan_roots 대신 모든 고정 디스크를 스캔
     scan_depth: int = 5
+    # 비우면 저장소 git 사용자(user.email 핸들)로 '내 커밋만' 자동 필터. 값 지정 시 그걸로 --author.
     author: str = ""
     include_claude_cwds: bool = True
 

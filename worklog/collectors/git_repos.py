@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import functools
 import os
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -44,6 +46,38 @@ def _scan_many(roots: list[str], depth: int) -> list[str]:
         for res in ex.map(lambda r: _scan(r, depth), roots):
             out.extend(res)
     return out
+
+
+def _git_config(repo: str, key: str) -> str | None:
+    """저장소에 유효한 git config 값(repo-local 우선, 없으면 global). 없으면 None."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo, "config", key],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5, **no_window_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (out.stdout or "").strip() or None
+
+
+@functools.lru_cache(maxsize=256)
+def _author_filter(repo: str) -> str | None:
+    """'내 커밋만' 자동 필터용 --author 정규식 패턴.
+
+    이메일 로컬파트(@ 앞)를 '<핸들>@' 로 매칭 → 도메인이 달라도(회사·개인·github noreply)
+    같은 핸들이면 잡고, 남의 '이름'에는 안 걸린다. git --author 는 부분일치(정규식)이라
+    로컬파트가 너무 짧으면(흔한 핸들 오검출 위험) 전체 이메일로 안전하게 떨어진다.
+    이메일이 없으면 user.name, 그것도 없으면 None(필터 안 함 → 내 커밋까지 사라지는 것 방지).
+    """
+    email = _git_config(repo, "user.email")
+    if email and "@" in email:
+        local = email.split("@", 1)[0]
+        if len(local) >= 3:
+            return re.escape(local) + "@"
+        return re.escape(email)
+    name = _git_config(repo, "user.name")
+    return re.escape(name) if name else None
 
 
 def _identify_many(paths: list[str]) -> list[tuple[str, str, str]]:
@@ -151,8 +185,11 @@ class GitCollector(Collector):
             f"--until={(ctx.end - timedelta(seconds=1)).isoformat()}",
             "--numstat", f"--pretty=format:{pretty}",
         ]
-        if self.cfg.author:
-            cmd.insert(4, f"--author={self.cfg.author}")
+        # '내가 올린 커밋만': author 명시값 우선, 없으면 저장소 git 사용자(핸들@)로 자동 필터.
+        # (git log 는 브랜치 전체를 보여줘 팀원 커밋도 섞이므로 항상 내 것만 남긴다.)
+        author = self.cfg.author or _author_filter(repo)
+        if author:
+            cmd.insert(4, f"--author={author}")
 
         out = subprocess.run(
             cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
