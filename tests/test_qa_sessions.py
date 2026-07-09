@@ -175,3 +175,18 @@ def test_summarize_day_map_reduce(monkeypatch):
     assert S.CONDENSE_SYSTEM_KO in calls          # 세션별 압축(map)
     assert calls[-1] == S.SYSTEM_KO               # 마지막은 종합(reduce)
     assert calls.count(S.CONDENSE_SYSTEM_KO) == 3  # 세션 3개 각 1회
+
+
+def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
+    import os
+
+    from worklog.collectors.claude_logs import ClaudeLogCollector
+    from worklog.config import ClaudeConfig
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    col = ClaudeLogCollector(ClaudeConfig(projects_dir=""))
+    assert col._projects_dir() == str(tmp_path / "cfg" / "projects")   # CLAUDE_CONFIG_DIR 우선
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    col2 = ClaudeLogCollector(ClaudeConfig(projects_dir=""))
+    assert col2._projects_dir() == os.path.join(os.path.expanduser("~"), ".claude", "projects")

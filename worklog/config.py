@@ -37,6 +37,7 @@ class GitConfig:
     scan_depth: int = 5
     # 비우면 저장소 git 사용자(user.email 핸들)로 '내 커밋만' 자동 필터. 값 지정 시 그걸로 --author.
     author: str = ""
+    authors: list[str] = field(default_factory=list)   # 추가 '내 신원'(이메일/핸들) — 자동감지와 OR 매칭
     include_claude_cwds: bool = True
 
 

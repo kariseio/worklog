@@ -35,7 +35,9 @@ class ClaudeLogCollector(Collector):
     def _projects_dir(self) -> str:
         if self.cfg.projects_dir:
             return os.path.expanduser(self.cfg.projects_dir)
-        return os.path.expanduser(os.path.join("~", ".claude", "projects"))
+        # Claude Code 는 CLAUDE_CONFIG_DIR(있으면) → ~/.claude 순으로 데이터 디렉토리를 찾는다.
+        base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join("~", ".claude")
+        return os.path.join(os.path.expanduser(base), "projects")
 
     def collect(self, ctx: CollectContext) -> CollectorResult:
         projects = self._projects_dir()

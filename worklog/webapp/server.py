@@ -49,6 +49,15 @@ _show_cb = None
 _pick_cb = None
 
 
+def _detected_git_identities() -> list[str]:
+    """전역 git 신원(설정 UI 표시용). 실패해도 빈 리스트."""
+    try:
+        from ..collectors.git_repos import detected_identities
+        return detected_identities()
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def set_show_callback(fn) -> None:
     global _show_cb
     _show_cb = fn
@@ -336,6 +345,8 @@ def create_app(config_path: str | None = None) -> "FastAPI":
                 "scan_all_drives": bool(git_store.get("scan_all_drives", True)),   # 앱 기본: 모든 하드디스크
                 "scan_roots": c.git.scan_roots,
                 "scan_depth": c.git.scan_depth,
+                "authors": c.git.authors,                 # 사용자가 추가한 '내 신원'
+                "detected": _detected_git_identities(),   # 자동 감지된 전역 git 이메일/이름
             },
             "claude": {"enabled": c.claude.enabled},
             "markdown": {"enabled": c.outputs.markdown.enabled, "dir": md_dir},
@@ -410,7 +421,9 @@ def create_app(config_path: str | None = None) -> "FastAPI":
             g["scan_all_drives"] = bool(gt.get("scan_all_drives", True))
             g["scan_roots"] = gt.get("scan_roots") or []
             g["scan_depth"] = depth
-            g["author"] = ""                # 앱: 작성자 필터 없음(내 커밋으로 간주)
+            g["author"] = ""                # 앱: 단일 override 미사용(아래 authors + 자동감지로)
+            g["authors"] = [a.strip() for a in (gt.get("authors") or [])
+                            if isinstance(a, str) and a.strip()]   # 내 신원 목록
             g["include_claude_cwds"] = True  # 앱: Claude 작업 폴더 항상 자동 포함
             # repos 는 앱에서 관리하지 않음 → 기존 값(config/CLI) 보존
         cl = body.get("claude")

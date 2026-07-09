@@ -110,6 +110,13 @@
   .confirm-card h3{margin:0 0 12px;font-size:16px;font-weight:600}
   .confirm-card p{margin:0 0 20px;color:var(--text-2);font-size:13px;line-height:1.65;white-space:pre-line}
   .confirm-foot{display:flex;gap:8px;justify-content:flex-end}
+  .idtable{width:100%;border-collapse:collapse;font-size:13px}
+  .idtable td{padding:7px 8px;border-bottom:1px solid var(--border)}
+  .idtable td.idcell{word-break:break-all}
+  .idtable td.idsrc,.idtable td.iddel{white-space:nowrap;width:1%;text-align:right}
+  .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px}
+  .badge.auto{background:var(--accent-bg);color:var(--accent)}
+  .badge.added{background:var(--surface-2);color:var(--text-2)}
   .sheet{background:var(--surface);border:1px solid var(--border-strong);border-radius:14px;width:100%;max-width:740px;height:min(624px,88vh);display:flex;flex-direction:column;overflow:hidden}
   .sheet-head{display:flex;align-items:center;justify-content:space-between;padding:15px 20px;border-bottom:1px solid var(--border);flex:none}
   .sheet-head h2{font-size:16px;font-weight:600;margin:0}
@@ -282,6 +289,16 @@
                 </div>
               </div>
               <div class="setrow"><label>스캔 깊이</label><input id="s-git-depth" type="number" min="1" max="12" style="width:70px;flex:none" /><span class="testmsg" style="margin-left:9px">하위 폴더 몇 단계까지 저장소를 찾을지</span></div>
+              <div class="setrow top"><label>내 git 계정</label>
+                <div style="flex:1;min-width:0">
+                  <p class="setdesc" style="margin:0 0 8px">이 이메일로 작성한 git 커밋을 <b>내 것</b>으로 인식합니다. 회사·개인·GitHub 등 계정이 여러 개면 모두 추가하세요.</p>
+                  <table class="idtable"><tbody id="s-git-idrows"></tbody></table>
+                  <div style="display:flex;gap:6px;margin-top:8px">
+                    <input id="s-git-author-in" type="text" placeholder="이메일 또는 핸들 추가 (예: kariseio@hecto.co.kr)" style="flex:1" />
+                    <button id="s-git-author-add" type="button">추가</button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div class="setsec">
@@ -688,6 +705,24 @@
     if(scanRoots.indexOf(p)>=0){ tmsg("s-git-msg","이미 추가됨","var(--warn)"); return false; }
     scanRoots.push(p); renderRoots(); return true;
   }
+  var gitAuthors=[];
+  var gitDetected=[];
+  function renderIdentities(){
+    var tb=$("s-git-idrows"), rows=[];
+    gitDetected.forEach(function(e){
+      rows.push('<tr><td class="idcell">'+esc(e)+'</td><td class="idsrc"><span class="badge auto">자동 감지</span></td><td class="iddel"></td></tr>');
+    });
+    gitAuthors.forEach(function(a,i){
+      rows.push('<tr><td class="idcell">'+esc(a)+'</td><td class="idsrc"><span class="badge added">직접 추가</span></td><td class="iddel"><button type="button" class="auth-del" data-i="'+i+'" aria-label="제거">✕</button></td></tr>');
+    });
+    if(!rows.length) rows.push('<tr><td colspan="3" class="testmsg" style="padding:8px">감지된 계정이 없습니다. 아래에서 추가하세요.</td></tr>');
+    tb.innerHTML=rows.join("");
+  }
+  function addAuthor(a){
+    a=(a||"").trim(); if(!a) return false;
+    if(gitAuthors.indexOf(a)>=0 || gitDetected.indexOf(a)>=0) return false;   // 중복/이미 감지된 것 방지
+    gitAuthors.push(a); renderIdentities(); return true;
+  }
   function driveText(d){ return d.path + (d.label ? (" ("+d.label+")") : ""); }
   function loadDrives(){
     var sel=$("s-git-drive"); $("s-git-add").disabled=true;
@@ -724,6 +759,7 @@
       $("s-tz").value=s.timezone||""; $("s-provider").value=(s.summarizer||{}).provider||"auto"; $("s-model").value=(s.summarizer||{}).model||""; $("s-raw").checked=!!s.include_raw_data;
       var g=s.git||{}; $("s-git-en").checked=!!g.enabled; $("s-git-specify").checked=g.scan_all_drives===false;
       scanRoots=(g.scan_roots||[]).slice(); renderRoots(); loadDrives(); $("s-git-depth").value=g.scan_depth||5; $("s-git-msg").textContent="";
+      gitAuthors=(g.authors||[]).slice(); gitDetected=(g.detected||[]).slice(); renderIdentities();
       updateGitScope();
       var cl=s.claude||{}; $("s-cl-en").checked=cl.enabled!==false;
       var md=s.markdown||{}; $("s-md-en").checked=md.enabled!==false; $("s-md-dir").value=md.dir||"";
@@ -753,7 +789,7 @@
     timezone:$("s-tz").value.trim(),
     include_raw_data:$("s-raw").checked,
     summarizer:{provider:$("s-provider").value, model:$("s-model").value.trim()||"claude-opus-4-8"},
-    git:{enabled:$("s-git-en").checked, scan_all_drives:!$("s-git-specify").checked, scan_roots:scanRoots.slice(), scan_depth:parseInt($("s-git-depth").value,10)||5},
+    git:{enabled:$("s-git-en").checked, scan_all_drives:!$("s-git-specify").checked, scan_roots:scanRoots.slice(), scan_depth:parseInt($("s-git-depth").value,10)||5, authors:gitAuthors.slice()},
     claude:{enabled:$("s-cl-en").checked},
     markdown:{enabled:$("s-md-en").checked, dir:$("s-md-dir").value.trim()},
     obsidian:{enabled:$("s-ob-en").checked, vault_dir:$("s-ob-vault").value.trim(), subdir:$("s-ob-sub").value.trim()||"업무일지"},
@@ -797,6 +833,12 @@
   });
   $("s-git-drive").onchange=function(){ $("s-git-add").disabled=!this.value; };
   $("s-git-add").onclick=function(){ var sel=$("s-git-drive"); if(!sel.value) return; if(addRoot(sel.value)) tmsg("s-git-msg","추가됨","var(--ok)"); sel.value=""; this.disabled=true; };
+  $("s-git-author-add").onclick=function(){ var inp=$("s-git-author-in"); if(addAuthor(inp.value)) inp.value=""; inp.focus(); };
+  $("s-git-author-in").addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); $("s-git-author-add").click(); } });
+  $("s-git-idrows").addEventListener("click", function(e){
+    var b=e.target.closest(".auth-del"); if(!b) return;
+    var i=parseInt(b.getAttribute("data-i"),10); if(i>=0){ gitAuthors.splice(i,1); renderIdentities(); }
+  });
   $("s-ob-test").onclick=function(){ testConn("obsidian",{vault_dir:$("s-ob-vault").value.trim(),subdir:$("s-ob-sub").value.trim()||"업무일지"},"s-ob-msg",this); };
   $("s-no-test").onclick=function(){ testConn("notion",{token:$("s-no-token").value.trim(),parent_type:$("s-no-ptype").value,parent_id:$("s-no-pid").value.trim(),title_prop:$("s-no-title").value.trim()||"Name"},"s-no-msg",this); };
   $("s-nw-test").onclick=function(){ testConn("naverworks",{client_id:$("s-nw-cid").value.trim(),client_secret:$("s-nw-secret").value.trim(),service_account:$("s-nw-sa").value.trim(),private_key_path:$("s-nw-keypath").value.trim(),user_id:$("s-nw-user").value.trim()},"s-nw-msg",this); };

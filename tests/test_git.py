@@ -95,6 +95,65 @@ def test_only_my_commits_across_domains(tmp_path):
     assert _author_filter(str(repo)) == "myhandle@"         # '핸들@' 패턴
 
 
+def test_authors_list_ors_extra_identities(tmp_path):
+    import os
+
+    from worklog.collectors.git_repos import _author_filter
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "myhandle@example.com")   # 자동감지 = myhandle
+    _git(repo, "config", "user.name", "Me")
+
+    today = datetime.now(get_tz("Asia/Seoul"))
+    iso = today.replace(microsecond=0).isoformat()
+    base = dict(os.environ, GIT_AUTHOR_DATE=iso, GIT_COMMITTER_DATE=iso)
+
+    def commit(msg, email=None, name="X"):
+        e = dict(base)
+        if email:
+            e.update(GIT_AUTHOR_EMAIL=email, GIT_COMMITTER_EMAIL=email, GIT_AUTHOR_NAME=name, GIT_COMMITTER_NAME=name)
+        (repo / (msg + ".txt")).write_text("x\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", msg],
+                       check=True, capture_output=True, text=True, env=e)
+
+    commit("auto")                                              # myhandle@example.com (자동감지)
+    commit("alt", email="othername@other.org", name="Alt")      # 내 다른 신원(추가할 것)
+    commit("teammate", email="team@x.com", name="Teammate")     # 남
+
+    _author_filter.cache_clear()
+    res = GitCollector(GitConfig(repos=[str(repo)], authors=["othername@other.org"])).collect(_ctx(today.date()))
+    assert {c.subject for c in res.data.commits} == {"auto", "alt"}   # 자동감지 + 추가신원 OR, 팀원 제외
+
+
+def test_claude_cwd_subdir_discovers_enclosing_repo(tmp_path):
+    import os
+
+    from worklog.collectors.git_repos import _author_filter
+
+    repo = tmp_path / "repo"
+    (repo / "backend").mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "me@example.com")
+    _git(repo, "config", "user.name", "Me")
+
+    today = datetime.now(get_tz("Asia/Seoul"))
+    iso = today.replace(microsecond=0).isoformat()
+    env = dict(os.environ, GIT_AUTHOR_DATE=iso, GIT_COMMITTER_DATE=iso)
+    (repo / "backend" / "a.txt").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "하위폴더 작업"],
+                   check=True, capture_output=True, text=True, env=env)
+
+    _author_filter.cache_clear()
+    # 저장소는 cfg.repos/scan 에 없고 Claude cwd 가 하위폴더(backend)뿐 → 상위 저장소가 발견돼야
+    res = GitCollector(GitConfig(repos=[], scan_roots=[]),
+                       extra_repos=[str(repo / "backend")]).collect(_ctx(today.date()))
+    assert any(c.subject == "하위폴더 작업" for c in res.data.commits)
+
+
 def test_uses_committer_date_not_author(tmp_path):
     """amend/rebase 처럼 저자날짜(어제)≠커밋날짜(오늘)면 커밋날짜 기준으로 잡히고 표시돼야."""
     import os

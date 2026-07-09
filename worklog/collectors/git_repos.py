@@ -61,23 +61,49 @@ def _git_config(repo: str, key: str) -> str | None:
     return (out.stdout or "").strip() or None
 
 
-@functools.lru_cache(maxsize=256)
-def _author_filter(repo: str) -> str | None:
-    """'내 커밋만' 자동 필터용 --author 정규식 패턴.
+def detected_identities() -> list[str]:
+    """UI 표시용 '자동 감지' 신원: 전역 git user.email(없으면 user.name) 하나."""
+    for key in ("user.email", "user.name"):
+        try:
+            r = subprocess.run(
+                ["git", "config", "--global", key],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=5, **no_window_kwargs(),
+            )
+            v = (r.stdout or "").strip()
+            if v:
+                return [v]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return []
 
-    이메일 로컬파트(@ 앞)를 '<핸들>@' 로 매칭 → 도메인이 달라도(회사·개인·github noreply)
-    같은 핸들이면 잡고, 남의 '이름'에는 안 걸린다. git --author 는 부분일치(정규식)이라
-    로컬파트가 너무 짧으면(흔한 핸들 오검출 위험) 전체 이메일로 안전하게 떨어진다.
-    이메일이 없으면 user.name, 그것도 없으면 None(필터 안 함 → 내 커밋까지 사라지는 것 방지).
+
+def _identity_pattern(identity: str) -> str | None:
+    """이메일/이름 하나 → git --author 정규식 패턴.
+
+    이메일이면 로컬파트(@ 앞)를 '<핸들>@' 로 → 도메인이 달라도(회사·개인·github noreply)
+    같은 핸들이면 매칭, 남의 '이름'엔 안 걸림. 로컬파트가 너무 짧으면(흔한 핸들 오검출
+    위험) 전체 이메일로 안전하게 떨어진다. 이름은 그대로(escape) 사용.
     """
-    email = _git_config(repo, "user.email")
-    if email and "@" in email:
-        local = email.split("@", 1)[0]
+    identity = (identity or "").strip()
+    if not identity:
+        return None
+    if "@" in identity:
+        local = identity.split("@", 1)[0]
         if len(local) >= 3:
             return re.escape(local) + "@"
-        return re.escape(email)
+        return re.escape(identity)
+    return re.escape(identity)
+
+
+@functools.lru_cache(maxsize=256)
+def _author_filter(repo: str) -> str | None:
+    """저장소의 git 사용자(user.email, 없으면 user.name)로 --author 패턴. 둘 다 없으면 None."""
+    email = _git_config(repo, "user.email")
+    if email:
+        return _identity_pattern(email)
     name = _git_config(repo, "user.name")
-    return re.escape(name) if name else None
+    return _identity_pattern(name) if name else None
 
 
 def _identify_many(paths: list[str]) -> list[tuple[str, str, str]]:
@@ -163,8 +189,11 @@ class GitCollector(Collector):
         candidates.extend(_scan_many(roots, self.cfg.scan_depth))
 
         if self.cfg.include_claude_cwds:
+            # cwd 가 저장소 하위폴더여도 되도록 .git 존재검사 없이 후보로 넣는다.
+            # _identify_many(git_common_dir)가 위로 올라가 저장소 루트로 해석/canonical 하고,
+            # 저장소가 아니면 자동 탈락한다. (Claude Code 도 cwd 를 저장소 루트로 묶음)
             for cwd in self.extra_repos:
-                if cwd and (Path(cwd) / ".git").exists():
+                if cwd:
                     candidates.append(cwd)
 
         by_identity: dict[str, tuple[str, str, str]] = {}
@@ -176,20 +205,30 @@ class GitCollector(Collector):
         # %cI(committer date): --since/--until 도 committer date 기준이라 기준을 일치시켜야
         # amend/rebase/cherry-pick 커밋이 엉뚱한 날에 잡히지 않는다.
         pretty = f"{_REC}%H{_FLD}%an{_FLD}%cI{_FLD}%s"
-        # --branches: 로컬 브랜치 전부(worktree 브랜치 포함). HEAD 도 넣어 detached 체크아웃 포함.
-        # remote-tracking/tag 는 제외해 노이즈 감소.
+        # --branches --remotes HEAD: 로컬 브랜치 + 원격추적(origin/*) + HEAD 전부.
+        # 원격추적까지 보는 이유 — PR squash 머지 후 로컬 브랜치 삭제/다른 PC fetch 등으로
+        # 로컬엔 없고 origin 에만 있는 '내' 커밋도 회수. 팀원 커밋은 아래 --author 로 걸러진다.
         cmd = [
-            "git", "-C", repo, "log", "--branches", "HEAD", "--no-merges",
+            "git", "-C", repo, "log", "--branches", "--remotes", "HEAD", "--no-merges",
             f"--since={ctx.start.isoformat()}",
             # git --until 은 '포함'이라 다음날 00:00 커밋이 양일에 이중집계됨 → 1초 당겨 [start, end) 로.
             f"--until={(ctx.end - timedelta(seconds=1)).isoformat()}",
             "--numstat", f"--pretty=format:{pretty}",
         ]
-        # '내가 올린 커밋만': author 명시값 우선, 없으면 저장소 git 사용자(핸들@)로 자동 필터.
-        # (git log 는 브랜치 전체를 보여줘 팀원 커밋도 섞이므로 항상 내 것만 남긴다.)
-        author = self.cfg.author or _author_filter(repo)
-        if author:
-            cmd.insert(4, f"--author={author}")
+        # '내가 올린 커밋만' 작성자 필터(git --author 여러 개 = OR):
+        # author 명시값이 있으면 그것만, 없으면 사용자가 설정한 신원 목록 + 저장소 자동감지.
+        if self.cfg.author:
+            patterns = [self.cfg.author]
+        else:
+            patterns = [_identity_pattern(a) for a in self.cfg.authors]
+            patterns.append(_author_filter(repo))
+        seen: set[str] = set()
+        flags: list[str] = []
+        for p in patterns:
+            if p and p not in seen:
+                seen.add(p)
+                flags.append(f"--author={p}")
+        cmd[4:4] = flags
 
         out = subprocess.run(
             cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",

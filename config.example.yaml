@@ -26,6 +26,7 @@ sources:
     # 비우면 '내 커밋만' 자동 필터(저장소 git user.email 의 핸들@ 로, 도메인 무관).
     # 특정 작성자만 보려면 이름/이메일/패턴 지정 (--author 정규식).
     author: ""
+    authors: []                       # 추가 '내 신원'(이메일/핸들) 목록 — 자동감지와 OR. 회사·개인·github 여러 개일 때.
     # Claude Code 로그에서 그날 작업한 프로젝트(cwd)를 자동으로 git 대상에 추가할지.
     include_claude_cwds: true
 
