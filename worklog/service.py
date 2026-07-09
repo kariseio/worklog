@@ -32,6 +32,7 @@ from .outputs.notion import NotionSink
 from .outputs.obsidian import ObsidianSink
 from .analyze import analyze
 from .render import (
+    _is_meta_session,
     render_analysis,
     render_facts,
     render_session_blocks,
@@ -103,7 +104,8 @@ def collect(cfg: Config, ctx: CollectContext, sources: set[str]) -> tuple[DailyD
         n: SourceStatus(name=n, state="disabled") for n in ALL_SOURCES
     }
     counters = {
-        "claude": lambda d: d.total_sessions if d else 0,
+        # 렌더와 일치하도록 자동요약(meta) 세션은 세지 않는다(칩 수 = 실제 표시 세션 수).
+        "claude": lambda d: sum(1 for s in d.sessions if not _is_meta_session(s)) if d else 0,
         "git": lambda d: len(d.commits) if d else 0,
         "naverworks": lambda d: len(d.events) if d else 0,
     }

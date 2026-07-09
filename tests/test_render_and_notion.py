@@ -112,6 +112,10 @@ def test_meta_session_detection_all_versions():
     # 진짜 작업 세션은 meta 가 아니어야 한다
     assert not _is_meta_session(sess("업무일지 생성기를 만들려고 해. activity watch 감시..."))
     assert not _is_meta_session(sess("로그인 버그 고쳐줘", "로그인 버그 수정"))
+    # 이 도구를 만드는 세션 — 시그니처 문구가 '중간'에 들어가도 오삭제하면 안 된다(시작 일치만 meta)
+    assert not _is_meta_session(sess("render 함수에서 정제된 요약 신호 렌더링 고쳐줘"))
+    assert not _is_meta_session(sess("업무일지 본문을 작성하는 로직 수정", "업무일지 렌더 수정"))
+    assert not _is_meta_session(sess("요약 프롬프트 고쳐줘 — 하루치 개발 활동 로그 문구 포함"))
 
 
 def test_rich_text_splits_long_text():

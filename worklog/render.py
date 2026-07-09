@@ -201,26 +201,25 @@ def render_timeline_for_llm(analysis) -> str:
 # 프롬프트 문구가 바뀌어도 이 표식은 불변이라, 요약 세션을 확실히 걸러낼 수 있다.
 WORKLOG_SENTINEL = "__WORKLOG_GENERATOR_AUTOSUMMARY__"
 
-# 표식이 없던 과거 요약 세션도 걸러내기 위한 프롬프트 시그니처(버전별).
-_META_SIGS = (
-    "개발자의 하루 활동 로그",          # v1
-    "하루치 개발 활동 데이터를",        # v2·v3 (system 프롬프트 시작부)
-    "하루치 개발 활동 로그",            # v4 (세션 질답 반영)
-    "질답 흐름'을 요약하는 도구",       # v4 (세션별 압축용 system)
-    "업무일지'로 압축하는 도구",        # v2
-    "업무일지'로 문서화하는 도구",      # v3·v4
-    "업무일지를 작성",
-    "업무일지 본문을 작성",
-    "업무일지 본문만 출력",
-    "정제된 요약 신호",
+# 표식(WORKLOG_SENTINEL)이 없던 과거 요약 세션 대비 — 요약기 system 프롬프트의 '도입부'.
+# 요약 세션의 첫 프롬프트(intent)는 이 문구로 '시작'한다. 부분일치(anywhere)로 보면 이 도구를
+# 만드는 진짜 세션(예: '정제된 요약 신호 렌더 고쳐줘')까지 오삭제되므로, '시작 일치'로만 판별한다.
+_META_INTRO_SIGS = (
+    "너는 하루치 개발 활동",     # v2·v3·v4 (system 시작부)
+    "너는 개발자의 하루 활동",   # v1
+    "하루치 개발 활동 데이터를",
+    "하루치 개발 활동 로그",
+    "개발자의 하루 활동 로그",
 )
 
 
 def _is_meta_session(s) -> bool:
-    text = (s.intent or "") + " " + (s.title or "")
-    if WORKLOG_SENTINEL in text:
+    """이 도구가 만든 자동요약 세션인지. WORKLOG_SENTINEL(확실) 또는 intent 가 요약기 system
+    프롬프트 도입부로 '시작'하는지로 판별한다(부분일치 오검출로 진짜 세션을 삭제하지 않게)."""
+    if WORKLOG_SENTINEL in ((s.intent or "") + " " + (s.title or "")):
         return True
-    return any(sig in text for sig in _META_SIGS)
+    intent = (s.intent or "").lstrip()
+    return any(intent.startswith(sig) for sig in _META_INTRO_SIGS)
 
 
 def render_work_signal(data: DailyData, tz, header: str = "") -> str:
