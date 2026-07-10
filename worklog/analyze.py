@@ -132,8 +132,9 @@ def analyze(data: DailyData, tz) -> Analysis:
     a = Analysis()
 
     commits = data.git.commits if data.git else []
-    # 업무일지 생성기 자신의 요약 세션(피드백 루프)은 지표/타임라인에서 제외
-    sessions = [s for s in (data.claude.sessions if data.claude else []) if not _is_meta_session(s)]
+    # 업무일지 생성기 자신의 요약 세션(피드백 루프)은 지표/타임라인에서 제외.
+    # Claude + Codex 세션을 함께 지표/타임라인에 반영한다.
+    sessions = [s for s in data.all_sessions if not _is_meta_session(s)]
 
     # --- KPI ---
     a.kpis.commits = len(commits)

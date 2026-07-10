@@ -52,6 +52,17 @@ class ClaudeConfig:
 
 
 @dataclass
+class CodexConfig:
+    enabled: bool = True
+    sessions_dir: str = ""        # 빈 값이면 ${CODEX_HOME|~/.codex}/sessions
+    include_read: bool = False
+    max_intent_len: int = 300
+    max_qa_turns: int = 120
+    max_answer_len: int = 180
+    max_lines: int = 200_000      # 초대형 롤아웃 파일 스트리밍 상한
+
+
+@dataclass
 class NaverWorksConfig:
     enabled: bool = False
     user_id: str = ""
@@ -170,6 +181,7 @@ class Config:
     include_raw_data: bool = False   # 저장 파일에 '수집 데이터 원본' 부록 포함 여부
     git: GitConfig = field(default_factory=GitConfig)
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
+    codex: CodexConfig = field(default_factory=CodexConfig)
     naverworks: NaverWorksConfig = field(default_factory=NaverWorksConfig)
     summarizer: SummarizerConfig = field(default_factory=SummarizerConfig)
     outputs: OutputsConfig = field(default_factory=OutputsConfig)
@@ -214,6 +226,7 @@ def load_config(config_path: str | None = None) -> Config:
     sources = raw.get("sources") or {}
     _apply(cfg.git, sources.get("git"))
     _apply(cfg.claude, sources.get("claude"))
+    _apply(cfg.codex, sources.get("codex"))
     _apply(cfg.naverworks, sources.get("naverworks"))
     _apply(cfg.summarizer, raw.get("summarizer"))
 
@@ -321,6 +334,7 @@ def _apply_app_settings(cfg: Config, store: dict) -> None:
     sources = store.get("sources") or {}
     _apply(cfg.git, sources.get("git"))
     _apply(cfg.claude, sources.get("claude"))
+    _apply(cfg.codex, sources.get("codex"))
     _apply_nonempty(cfg.naverworks, sources.get("naverworks"))
 
     outputs = store.get("outputs") or {}

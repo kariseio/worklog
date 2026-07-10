@@ -13,6 +13,7 @@ uv run pyinstaller --noconfirm --onefile --windowed --name worklog ^
   --collect-submodules uvicorn ^
   --collect-submodules pystray ^
   --collect-all webview ^
+  --collect-all zstandard ^
   --exclude-module pytest ^
   app_main.py
 

@@ -12,6 +12,8 @@ dependencies = [
     "PyJWT[crypto]>=2.8",
     # Windows 에는 IANA 시간대 DB 가 없어 zoneinfo 가 실패하므로 함께 설치.
     "tzdata; platform_system == 'Windows'",
+    # Codex 의 압축(.jsonl.zst) 롤아웃 세션을 읽기 위함. 없으면 압축 파일만 조용히 건너뛴다.
+    "zstandard>=0.22",
 ]
 
 [project.optional-dependencies]

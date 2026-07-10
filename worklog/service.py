@@ -16,12 +16,14 @@ from datetime import date
 
 from .collectors.base import CollectContext
 from .collectors.claude_logs import ClaudeLogCollector
+from .collectors.codex_logs import CodexCollector
 from .collectors.git_repos import GitCollector
 from .collectors.naverworks import NaverWorksCollector
 from .config import Config
 from .models import (
     CalendarData,
     ClaudeData,
+    CodexData,
     DailyData,
     GitData,
     WorkLog,
@@ -45,7 +47,7 @@ from .util import get_tz, resolve_day
 
 log = logging.getLogger("worklog")
 
-ALL_SOURCES = {"git", "claude", "naverworks"}
+ALL_SOURCES = {"git", "claude", "codex", "naverworks"}
 
 
 @dataclass
@@ -81,6 +83,7 @@ def enabled_sources(cfg: Config, sources_arg: str | list[str] | None) -> set[str
         name for name, on in [
             ("git", cfg.git.enabled),
             ("claude", cfg.claude.enabled),
+            ("codex", cfg.codex.enabled),
             ("naverworks", cfg.naverworks.enabled),
         ] if on
     }
@@ -106,6 +109,7 @@ def collect(cfg: Config, ctx: CollectContext, sources: set[str]) -> tuple[DailyD
     counters = {
         # 렌더와 일치하도록 자동요약(meta) 세션은 세지 않는다(칩 수 = 실제 표시 세션 수).
         "claude": lambda d: sum(1 for s in d.sessions if not _is_meta_session(s)) if d else 0,
+        "codex": lambda d: sum(1 for s in d.sessions if not _is_meta_session(s)) if d else 0,
         "git": lambda d: len(d.commits) if d else 0,
         "naverworks": lambda d: len(d.events) if d else 0,
     }
@@ -123,11 +127,13 @@ def collect(cfg: Config, ctx: CollectContext, sources: set[str]) -> tuple[DailyD
             data.claude = res.data
             claude_cwds = res.data.cwds
 
-    # 2) git · naverworks 는 서로 독립 → 병렬 실행
-    #    (느린 git 이 네트워크 붙는 naverworks 와 시간상 겹쳐 돈다)
+    # 2) git · codex · naverworks 는 서로 독립 → 병렬 실행
+    #    (느린 git 이 네트워크 붙는 naverworks·파일 읽는 codex 와 시간상 겹쳐 돈다)
     parallel: list[tuple[str, object]] = []
     if "git" in sources:
         parallel.append(("git", GitCollector(cfg.git, extra_repos=claude_cwds)))
+    if "codex" in sources:
+        parallel.append(("codex", CodexCollector(cfg.codex)))
     if "naverworks" in sources:
         parallel.append(("naverworks", NaverWorksCollector(cfg.naverworks)))
 
@@ -135,12 +141,14 @@ def collect(cfg: Config, ctx: CollectContext, sources: set[str]) -> tuple[DailyD
         _assign(name, res)
         if name == "git" and isinstance(res.data, GitData):
             data.git = res.data
+        elif name == "codex" and isinstance(res.data, CodexData):
+            data.codex = res.data
         elif name == "naverworks" and isinstance(res.data, CalendarData):
             data.calendar = res.data
 
     disambiguate_repo_names(data)
 
-    order = ["git", "claude", "naverworks"]
+    order = ["git", "claude", "codex", "naverworks"]
     return data, [statuses[n] for n in order]
 
 
@@ -175,12 +183,12 @@ def disambiguate_repo_names(data: DailyData) -> None:
             if c.repo_path:
                 key_base[c.repo_path] = c.repo
     sess_key: dict[int, str | None] = {}   # 세션 → 저장소키
-    if data.claude:
-        for s in data.claude.sessions:
-            k = git_common_dir(s.cwd) if s.cwd else None
-            sess_key[id(s)] = k
-            if k:
-                key_base.setdefault(k, s.project or "?")
+    all_sessions = data.all_sessions       # Claude + Codex
+    for s in all_sessions:
+        k = git_common_dir(s.cwd) if s.cwd else None
+        sess_key[id(s)] = k
+        if k:
+            key_base.setdefault(k, s.project or "?")
 
     keys_by_base: dict[str, set] = defaultdict(set)
     for key, base in key_base.items():
@@ -213,11 +221,10 @@ def disambiguate_repo_names(data: DailyData) -> None:
         for c in data.git.commits:
             if c.repo_path in newname:
                 c.repo = newname[c.repo_path]
-    if data.claude:
-        for s in data.claude.sessions:
-            k = sess_key.get(id(s))
-            if k in newname:
-                s.project = newname[k]
+    for s in all_sessions:
+        k = sess_key.get(id(s))
+        if k in newname:
+            s.project = newname[k]
 
 
 def _safe_collect(collector, ctx: CollectContext):
@@ -260,10 +267,10 @@ def availability_line(cfg: Config, statuses: list[SourceStatus]) -> str:
     """수집 소스 + 저장 대상의 유무를 한눈에 보여주는 라벨. (생성 결과가 유무에 따라 달라짐을 명시)"""
     icon = {"ok": "✅", "skipped": "❌", "error": "⚠️", "disabled": "❌"}
     src_label = {
-        "git": "Git", "claude": "Claude",
+        "git": "Git", "claude": "Claude", "codex": "Codex",
         "naverworks": "캘린더(NaverWorks)",
     }
-    order = {"git": 0, "claude": 1, "naverworks": 2}
+    order = {"git": 0, "claude": 1, "codex": 2, "naverworks": 3}
     src = []
     for s in sorted(statuses, key=lambda x: order.get(x.name, 9)):
         cnt = f"({s.count})" if s.state == "ok" and s.count else ""
@@ -397,7 +404,15 @@ def read_saved(cfg: Config, date_str: str) -> str | None:
 def to_evidence(data: DailyData, tz) -> dict:
     from .util import fmt_time, parse_iso
 
-    ev: dict = {"git": [], "claude": [], "calendar": []}
+    ev: dict = {"git": [], "claude": [], "codex": [], "calendar": []}
+
+    def _session_ev(s) -> dict:
+        return {
+            "project": s.project, "branch": s.git_branch,
+            "title": s.title or s.intent, "intent": s.intent,
+            "files": len(s.files_edited), "tokens": s.output_tokens,
+            "tools": s.tool_counts,
+        }
 
     if data.git:
         for c in data.git.commits:
@@ -406,14 +421,15 @@ def to_evidence(data: DailyData, tz) -> dict:
                 "insertions": c.insertions, "deletions": c.deletions,
                 "files": c.files_changed,
             })
+    # 칩 수·지표·본문과 일치하도록 자동요약(meta) 세션은 근거에서도 제외한다.
     if data.claude:
         for s in data.claude.sessions:
-            ev["claude"].append({
-                "project": s.project, "branch": s.git_branch,
-                "title": s.title or s.intent, "intent": s.intent,
-                "files": len(s.files_edited), "tokens": s.output_tokens,
-                "tools": s.tool_counts,
-            })
+            if not _is_meta_session(s):
+                ev["claude"].append(_session_ev(s))
+    if data.codex:
+        for s in data.codex.sessions:
+            if not _is_meta_session(s):
+                ev["codex"].append(_session_ev(s))
     if data.calendar:
         for e in data.calendar.events:
             when = "종일" if e.all_day else f"{fmt_time(parse_iso(e.start), tz)}–{fmt_time(parse_iso(e.end), tz)}"

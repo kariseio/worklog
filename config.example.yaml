@@ -39,6 +39,16 @@ sources:
     max_qa_turns: 120                 # 세션당 수집할 질답 수 상한(초과 시 최근 것 유지)
     max_answer_len: 180               # 질답의 '답' 요지 최대 길이
 
+  # --- OpenAI Codex CLI 세션 로그 (롤아웃): "무슨 작업을 했는지" ---
+  codex:
+    enabled: true
+    sessions_dir: ""                  # 비우면 ${CODEX_HOME|~/.codex}/sessions
+    include_read: false
+    max_intent_len: 300
+    max_qa_turns: 120
+    max_answer_len: 180
+    max_lines: 200000                 # 초대형 롤아웃 파일 스트리밍 상한
+
   # --- NaverWorks 캘린더: 그날의 일정/회의 ---
   naverworks:
     enabled: false                    # .env 에 자격증명 채운 뒤 true 로

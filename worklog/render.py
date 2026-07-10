@@ -19,6 +19,7 @@ def render_facts(data: DailyData, tz) -> str:
     _calendar(lines, data, tz)
     _git(lines, data)
     _claude(lines, data)
+    _codex(lines, data)
 
     if data.warnings:
         lines.append("## ⚠️ 수집 경고")
@@ -83,6 +84,20 @@ def _claude(lines, data):
         lines.append("- (세션 없음)")
         lines.append("")
         return
+    _sessions_facts_body(lines, sessions)
+
+
+def _codex(lines, data):
+    cx = data.codex
+    sessions = [s for s in (cx.sessions if cx else []) if not _is_meta_session(s)]
+    if not sessions:
+        return   # Codex 를 안 쓰면 빈 섹션을 넣지 않는다(매일 노이즈 방지)
+    lines.append("## 🧩 Codex 작업")
+    _sessions_facts_body(lines, sessions)
+
+
+def _sessions_facts_body(lines, sessions):
+    """세션 목록(Claude·Codex 공통)을 사실 정리 마크다운으로."""
     total_tokens = sum(s.output_tokens for s in sessions)
     lines.append(
         f"- 총 **{len(sessions)}세션** · 출력 {total_tokens:,} 토큰"
@@ -134,7 +149,7 @@ def render_analysis(analysis) -> str:
     mtg = f" · 회의 {k.meetings}건" if k.meetings else ""
     lines.append(
         f"- 커밋 **{k.commits}** (+{k.insertions:,}/−{k.deletions:,}) · 저장소 {k.repos} · "
-        f"Claude **{k.sessions}세션** · 출력 {_tok(k.tokens)}{mtg}{span}"
+        f"AI **{k.sessions}세션** · 출력 {_tok(k.tokens)}{mtg}{span}"
     )
     if analysis.commit_types:
         dist = " · ".join(f"{lbl} {n}" for lbl, n in sorted(analysis.commit_types.items(), key=lambda x: x[1], reverse=True))
@@ -222,6 +237,31 @@ def _is_meta_session(s) -> bool:
     return any(intent.startswith(sig) for sig in _META_INTRO_SIGS)
 
 
+def _emit_session_titles(lines: list, heading: str, sessions) -> None:
+    """세션 제목을 프로젝트별로 묶어(중복 제거) 정제 신호에 추가. Claude·Codex 공통."""
+    seen: set = set()
+    by_proj: dict[str, list] = {}
+    for s in sessions:
+        if _is_meta_session(s):
+            continue
+        title = (s.title or "").strip() or (s.intent or "").strip()[:60]
+        if not title:
+            continue
+        proj = s.project or "?"
+        key = (proj, title)
+        if key in seen:
+            continue
+        seen.add(key)
+        by_proj.setdefault(proj, []).append((title, len(s.files_edited)))
+    if not by_proj:
+        return
+    lines.append(heading)
+    for proj, items in by_proj.items():
+        joined = "; ".join(t + (f"({n}파일)" if n else "") for t, n in items)
+        lines.append(f"- **{proj}**: {joined}")
+    lines.append("")
+
+
 def render_work_signal(data: DailyData, tz, header: str = "") -> str:
     """요약기에 넣을 정제된 신호. 커밋 제목 + 세션 제목 중심, 명령어/원문 제외."""
     lines: list[str] = []
@@ -236,27 +276,9 @@ def render_work_signal(data: DailyData, tz, header: str = "") -> str:
         lines.append("")
 
     if data.claude and data.claude.sessions:
-        lines.append("## Claude Code 작업 (세션 제목 기준)")
-        seen: set = set()
-        by_proj: dict[str, list] = {}
-        for s in data.claude.sessions:
-            if _is_meta_session(s):
-                continue
-            title = (s.title or "").strip() or (s.intent or "").strip()[:60]
-            if not title:
-                continue
-            proj = s.project or "?"
-            key = (proj, title)
-            if key in seen:
-                continue
-            seen.add(key)
-            by_proj.setdefault(proj, []).append((title, len(s.files_edited)))
-        for proj, items in by_proj.items():
-            joined = "; ".join(
-                t + (f"({n}파일)" if n else "") for t, n in items
-            )
-            lines.append(f"- **{proj}**: {joined}")
-        lines.append("")
+        _emit_session_titles(lines, "## Claude Code 작업 (세션 제목 기준)", data.claude.sessions)
+    if data.codex and data.codex.sessions:
+        _emit_session_titles(lines, "## Codex 작업 (세션 제목 기준)", data.codex.sessions)
 
     if data.calendar and data.calendar.events:
         lines.append("## 일정")
@@ -277,18 +299,21 @@ def render_session_blocks(data, tz, max_files: int = 8) -> list[tuple[str, str]]
     이게 '이 얘기 저 얘기'(세션 내 여러 주제)를 요약기에 전달하는 핵심 신호다.
     """
     blocks: list[tuple[str, str]] = []
-    if not (data.claude and data.claude.sessions):
+    sessions = data.all_sessions   # Claude + Codex
+    if not sessions:
         return blocks
-    for s in data.claude.sessions:
+    for s in sessions:
         if _is_meta_session(s):
             continue
         proj = s.project or "?"
+        # Codex 세션은 라벨에 표시해 요약기가 도구를 구분할 수 있게 한다.
+        tag = " · Codex" if getattr(s, "agent", "claude") == "codex" else ""
         # 제목/의도는 원본 사용자 텍스트라 개행을 품을 수 있다. 구조선(### 헤더, 요청)에
         # 그대로 넣으면 map-reduce 파서의 블록 구분자 "\n\n### " 를 주입해 오분할되므로 접는다.
         title = (s.title or "").strip() or (s.intent or "").strip()[:60] or "(제목 없음)"
         title = " ".join(title.split())
         span = f" {fmt_time(s.first_ts, tz)}–{fmt_time(s.last_ts, tz)}" if (s.first_ts and s.last_ts) else ""
-        lines = [f"### [{proj}] {title}{span}"]
+        lines = [f"### [{proj}{tag}] {title}{span}"]
         if s.qa:
             if s.qa_dropped:   # tail 유지라 생략분은 '앞부분'
                 lines.append(f"- (앞부분 질답 {s.qa_dropped}개 생략)")
@@ -305,7 +330,7 @@ def render_session_blocks(data, tz, max_files: int = 8) -> list[tuple[str, str]]
             shown = s.files_edited[:max_files]
             more = f" 외 {len(s.files_edited) - len(shown)}개" if len(s.files_edited) > len(shown) else ""
             lines.append("- 수정: " + ", ".join(_base(p) for p in shown) + more)
-        blocks.append((f"[{proj}] {title}", "\n".join(lines)))
+        blocks.append((f"[{proj}{tag}] {title}", "\n".join(lines)))
     return blocks
 
 

@@ -349,6 +349,7 @@ def create_app(config_path: str | None = None) -> "FastAPI":
                 "detected": _detected_git_identities(),   # 자동 감지된 전역 git 이메일/이름
             },
             "claude": {"enabled": c.claude.enabled},
+            "codex": {"enabled": c.codex.enabled},
             "markdown": {"enabled": c.outputs.markdown.enabled, "dir": md_dir},
             "paths": {"settings_file": str(app_settings_path()), "save_dir": md_dir},
             "obsidian": {"enabled": o.enabled, "vault_dir": o.vault_dir, "subdir": o.subdir},
@@ -429,6 +430,9 @@ def create_app(config_path: str | None = None) -> "FastAPI":
         cl = body.get("claude")
         if isinstance(cl, dict):
             srcs.setdefault("claude", {})["enabled"] = bool(cl.get("enabled", True))
+        cx = body.get("codex")
+        if isinstance(cx, dict):
+            srcs.setdefault("codex", {})["enabled"] = bool(cx.get("enabled", True))
         nw = body.get("naverworks")
         if isinstance(nw, dict):
             target = srcs.setdefault("naverworks", {})

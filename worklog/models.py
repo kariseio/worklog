@@ -69,6 +69,7 @@ class ClaudeSession:
     git_branch: str | None
     title: str | None              # ai-title (세션 요약 한 줄)
     intent: str | None             # 그날 첫 사용자 프롬프트
+    agent: str = "claude"          # 이 세션을 만든 에이전트: "claude" | "codex"
     files_edited: list[str] = field(default_factory=list)
     files_read: list[str] = field(default_factory=list)
     commands: list[str] = field(default_factory=list)
@@ -82,6 +83,28 @@ class ClaudeSession:
 
 @dataclass
 class ClaudeData:
+    sessions: list[ClaudeSession] = field(default_factory=list)
+
+    @property
+    def total_sessions(self) -> int:
+        return len(self.sessions)
+
+    @property
+    def cwds(self) -> list[str]:
+        seen: list[str] = []
+        for s in self.sessions:
+            if s.cwd and s.cwd not in seen:
+                seen.append(s.cwd)
+        return seen
+
+
+# --------------------------------------------------------------------------- #
+# Codex 세션 (OpenAI Codex CLI 롤아웃 로그) — 항목은 ClaudeSession 을 재사용(agent="codex")
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class CodexData:
     sessions: list[ClaudeSession] = field(default_factory=list)
 
     @property
@@ -129,8 +152,17 @@ class DailyData:
     tz_name: str
     git: GitData | None = None
     claude: ClaudeData | None = None
+    codex: CodexData | None = None
     calendar: CalendarData | None = None
     warnings: list[str] = field(default_factory=list)
+
+    @property
+    def all_sessions(self) -> list[ClaudeSession]:
+        """Claude + Codex 세션을 합친 목록(렌더·분석에서 공통 소비)."""
+        out: list[ClaudeSession] = list(self.claude.sessions) if self.claude else []
+        if self.codex:
+            out += self.codex.sessions
+        return out
 
     def is_empty(self) -> bool:
         """LLM 요약을 돌릴 만한 실제 데이터가 하나라도 있는지."""
@@ -139,6 +171,8 @@ class DailyData:
         if self.git and self.git.commits:
             return False
         if self.claude and self.claude.sessions:
+            return False
+        if self.codex and self.codex.sessions:
             return False
         return True
 

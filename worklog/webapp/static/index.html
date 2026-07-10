@@ -307,6 +307,11 @@
             </div>
 
             <div class="setsec">
+              <h3 class="seth"><label style="display:inline-flex;align-items:center;gap:7px"><input type="checkbox" id="s-cx-en" /> Codex 세션</label></h3>
+              <p class="setdesc">OpenAI Codex CLI 의 그날 롤아웃 세션(~/.codex/sessions)을 읽습니다. 사용 기록이 없으면 표시되지 않습니다.</p>
+            </div>
+
+            <div class="setsec">
               <h3 class="seth"><label style="display:inline-flex;align-items:center;gap:7px"><input type="checkbox" id="s-nw-en" /> NaverWorks 캘린더</label></h3>
               <div class="setrow"><label>Client ID</label><input id="s-nw-cid" type="text" autocomplete="off" /></div>
               <div class="setrow"><label>Client Secret</label><input id="s-nw-secret" type="password" autocomplete="off" /></div>
@@ -452,8 +457,8 @@
   }
 
   function chipFor(s){
-    var label = {git:"Git",claude:"Claude",naverworks:"NaverWorks"}[s.name]||s.name;
-    var unit = {git:"커밋",claude:"세션",naverworks:"일정"}[s.name]||"";
+    var label = {git:"Git",claude:"Claude",codex:"Codex",naverworks:"NaverWorks"}[s.name]||s.name;
+    var unit = {git:"커밋",claude:"세션",codex:"세션",naverworks:"일정"}[s.name]||"";
     if(s.state==="ok"){ return '<span class="chip ok" title="'+esc(s.note||"")+'">'+label+" "+s.count+unit+"</span>"; }
     var msg = {skipped:"미연결",error:"오류",disabled:"꺼짐"}[s.state]||s.state;
     return '<span class="chip" title="'+esc(s.note||"")+'">'+label+" · "+msg+"</span>";
@@ -467,6 +472,10 @@
     if(ev.claude && ev.claude.length){
       h+='<p class="sub">Claude 세션</p>';
       ev.claude.forEach(function(s){ h+='<p class="row">'+esc(s.project||"?")+(s.branch?' <span style="color:var(--muted)">['+esc(s.branch)+']</span>':"")+" · "+esc(s.title||"")+" · "+s.files+"파일</p>"; });
+    }
+    if(ev.codex && ev.codex.length){
+      h+='<p class="sub">Codex 세션</p>';
+      ev.codex.forEach(function(s){ h+='<p class="row">'+esc(s.project||"?")+(s.branch?' <span style="color:var(--muted)">['+esc(s.branch)+']</span>':"")+" · "+esc(s.title||"")+" · "+s.files+"파일</p>"; });
     }
     if(ev.calendar && ev.calendar.length){
       h+='<p class="sub">일정</p>';
@@ -762,6 +771,7 @@
       gitAuthors=(g.authors||[]).slice(); gitDetected=(g.detected||[]).slice(); renderIdentities();
       updateGitScope();
       var cl=s.claude||{}; $("s-cl-en").checked=cl.enabled!==false;
+      var cx=s.codex||{}; $("s-cx-en").checked=cx.enabled!==false;
       var md=s.markdown||{}; $("s-md-en").checked=md.enabled!==false; $("s-md-dir").value=md.dir||"";
       var o=s.obsidian||{}; $("s-ob-en").checked=!!o.enabled; $("s-ob-vault").value=o.vault_dir||""; $("s-ob-sub").value=o.subdir||"";
       var n=s.notion||{}; $("s-no-en").checked=!!n.enabled; $("s-no-ptype").value=n.parent_type||"page"; $("s-no-pid").value=n.parent_id||""; $("s-no-title").value=n.title_prop||"";
@@ -791,6 +801,7 @@
     summarizer:{provider:$("s-provider").value, model:$("s-model").value.trim()||"claude-opus-4-8"},
     git:{enabled:$("s-git-en").checked, scan_all_drives:!$("s-git-specify").checked, scan_roots:scanRoots.slice(), scan_depth:parseInt($("s-git-depth").value,10)||5, authors:gitAuthors.slice()},
     claude:{enabled:$("s-cl-en").checked},
+    codex:{enabled:$("s-cx-en").checked},
     markdown:{enabled:$("s-md-en").checked, dir:$("s-md-dir").value.trim()},
     obsidian:{enabled:$("s-ob-en").checked, vault_dir:$("s-ob-vault").value.trim(), subdir:$("s-ob-sub").value.trim()||"업무일지"},
     notion:{enabled:$("s-no-en").checked, parent_type:$("s-no-ptype").value, parent_id:$("s-no-pid").value.trim(), title_prop:$("s-no-title").value.trim()||"Name", token:$("s-no-token").value.trim()},

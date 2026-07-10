@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yesterday", action="store_true", help="어제로 설정")
     p.add_argument("--config", help="config.yaml 경로 (기본: ./config.yaml)")
     p.add_argument("--tz", help="시간대 재정의 (예: Asia/Seoul)")
-    p.add_argument("--sources", help="사용할 소스만 콤마로 (git,claude,naverworks)")
+    p.add_argument("--sources", help="사용할 소스만 콤마로 (git,claude,codex,naverworks)")
     p.add_argument("--no-llm", action="store_true", help="LLM 요약 생략")
     p.add_argument("--dry-run", action="store_true", help="파일 저장 없이 콘솔 출력")
     p.add_argument("--init", action="store_true", help="config.yaml / .env 템플릿 생성")
