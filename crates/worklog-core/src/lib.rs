@@ -6,12 +6,17 @@
 //!
 //! 모듈은 `docs/v2-plan.md` 2절의 매핑 순서대로 채운다.
 
+pub mod analyze;
 pub mod collect;
 pub mod config;
 pub mod drives;
 pub mod model;
+pub mod output;
 pub mod paths;
+pub mod render;
+pub mod service;
 pub mod store;
+pub mod summarize;
 pub mod time;
 
 /// 크레이트 버전 (Cargo.toml `workspace.package.version`).
