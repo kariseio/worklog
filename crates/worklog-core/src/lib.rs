@@ -6,7 +6,9 @@
 //!
 //! 모듈은 `docs/v2-plan.md` 2절의 매핑 순서대로 채운다.
 
+pub mod collect;
 pub mod config;
+pub mod drives;
 pub mod model;
 pub mod paths;
 pub mod store;
