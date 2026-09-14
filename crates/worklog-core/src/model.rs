@@ -1,0 +1,348 @@
+//! 수집된 데이터와 최종 업무일지를 담는 데이터 모델.
+//!
+//! 각 수집기는 여기 정의된 타입을 채워 돌려주고, 분석·렌더·요약·출력은 이 타입만 안다.
+//! 시각은 전부 UTC `DateTime<Utc>` 로 들고, 표시할 때만 설정 시간대로 바꾼다.
+
+use chrono::{DateTime, NaiveDate, Utc};
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+
+// --------------------------------------------------------------------------- //
+// Git
+// --------------------------------------------------------------------------- //
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GitCommit {
+    pub repo: String,
+    pub hash: String,
+    pub author: String,
+    pub when: DateTime<Utc>,
+    pub subject: String,
+    #[serde(default)]
+    pub files_changed: u32,
+    #[serde(default)]
+    pub insertions: u32,
+    #[serde(default)]
+    pub deletions: u32,
+    /// 물리적 저장소 식별 키(git-common-dir). 동명이repo 구분용.
+    #[serde(default)]
+    pub repo_path: String,
+}
+
+impl GitCommit {
+    /// 해시 앞 8자.
+    pub fn short_hash(&self) -> &str {
+        let end = self
+            .hash
+            .char_indices()
+            .nth(8)
+            .map(|(i, _)| i)
+            .unwrap_or(self.hash.len());
+        &self.hash[..end]
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GitData {
+    pub commits: Vec<GitCommit>,
+}
+
+impl GitData {
+    /// 커밋 등장 순서를 유지한 저장소 이름 목록(중복 제거).
+    pub fn repos(&self) -> Vec<&str> {
+        let mut seen: Vec<&str> = Vec::new();
+        for c in &self.commits {
+            if !seen.contains(&c.repo.as_str()) {
+                seen.push(c.repo.as_str());
+            }
+        }
+        seen
+    }
+
+    pub fn commits_for<'a>(&'a self, repo: &'a str) -> impl Iterator<Item = &'a GitCommit> + 'a {
+        self.commits.iter().filter(move |c| c.repo == repo)
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// AI 세션 (Claude Code · Codex 공통)
+// --------------------------------------------------------------------------- //
+
+/// 세션 안의 한 '질답' — 사용자 질문 + 그에 대한 어시스턴트 응답 요지.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QaTurn {
+    /// 로컬 시:분 (예: "14:03"). 없으면 빈 문자열.
+    pub time: String,
+    pub question: String,
+    #[serde(default)]
+    pub answer: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Agent {
+    #[default]
+    Claude,
+    Codex,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Session {
+    pub session_id: Option<String>,
+    /// cwd 의 basename (표시용). worktree 면 실제 저장소명.
+    pub project: Option<String>,
+    /// 실제 프로젝트 절대경로.
+    pub cwd: Option<String>,
+    pub git_branch: Option<String>,
+    /// ai-title (세션 요약 한 줄).
+    pub title: Option<String>,
+    /// 그날 첫 사용자 프롬프트.
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub agent: Agent,
+    #[serde(default)]
+    pub files_edited: Vec<String>,
+    #[serde(default)]
+    pub files_read: Vec<String>,
+    #[serde(default)]
+    pub commands: Vec<String>,
+    /// 도구 → 호출 수. **첫 사용 순서를 유지**한다 — 동점일 때 표시 순서가 v1(Python dict)과 같아야 한다.
+    #[serde(default)]
+    pub tool_counts: IndexMap<String, u32>,
+    #[serde(default)]
+    pub output_tokens: u64,
+    pub first_ts: Option<DateTime<Utc>>,
+    pub last_ts: Option<DateTime<Utc>>,
+    /// 세션 내 질답 흐름(시간순).
+    #[serde(default)]
+    pub qa: Vec<QaTurn>,
+    /// 상한 초과로 생략된(앞부분) 질답 수.
+    #[serde(default)]
+    pub qa_dropped: u32,
+}
+
+impl Session {
+    /// 표시용 제목: ai-title → 첫 프롬프트(60자) → "(제목 없음)".
+    pub fn display_title(&self) -> String {
+        let t = self.title.as_deref().map(str::trim).unwrap_or("");
+        if !t.is_empty() {
+            return t.to_string();
+        }
+        let i = self.intent.as_deref().map(str::trim).unwrap_or("");
+        if !i.is_empty() {
+            return i.chars().take(60).collect();
+        }
+        "(제목 없음)".to_string()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionData {
+    pub sessions: Vec<Session>,
+}
+
+impl SessionData {
+    pub fn total_sessions(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// 세션 cwd 목록(등장 순서, 중복 제거).
+    pub fn cwds(&self) -> Vec<&str> {
+        let mut seen: Vec<&str> = Vec::new();
+        for s in &self.sessions {
+            if let Some(c) = s.cwd.as_deref()
+                && !seen.contains(&c)
+            {
+                seen.push(c);
+            }
+        }
+        seen
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// 캘린더 (NaverWorks)
+// --------------------------------------------------------------------------- //
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CalendarEvent {
+    pub title: Option<String>,
+    /// RFC3339 또는 all-day 날짜("YYYY-MM-DD").
+    pub start: Option<String>,
+    pub end: Option<String>,
+    #[serde(default)]
+    pub all_day: bool,
+    pub location: Option<String>,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub attendees: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CalendarData {
+    pub events: Vec<CalendarEvent>,
+}
+
+// --------------------------------------------------------------------------- //
+// 하루치 종합 + 최종 산출물
+// --------------------------------------------------------------------------- //
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DailyData {
+    pub target_date: NaiveDate,
+    pub tz_name: String,
+    pub git: Option<GitData>,
+    pub claude: Option<SessionData>,
+    pub codex: Option<SessionData>,
+    pub calendar: Option<CalendarData>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+impl DailyData {
+    pub fn new(target_date: NaiveDate, tz_name: impl Into<String>) -> Self {
+        Self {
+            target_date,
+            tz_name: tz_name.into(),
+            git: None,
+            claude: None,
+            codex: None,
+            calendar: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Claude + Codex 세션을 합친 목록(렌더·분석에서 공통 소비).
+    pub fn all_sessions(&self) -> Vec<&Session> {
+        let mut out: Vec<&Session> = Vec::new();
+        if let Some(c) = &self.claude {
+            out.extend(c.sessions.iter());
+        }
+        if let Some(x) = &self.codex {
+            out.extend(x.sessions.iter());
+        }
+        out
+    }
+
+    /// 요약을 돌릴 만한 실제 데이터가 하나라도 있는지. (`Some(빈 목록)` 은 없는 것과 같다)
+    pub fn is_empty(&self) -> bool {
+        let has_events = self.calendar.as_ref().is_some_and(|c| !c.events.is_empty());
+        let has_commits = self.git.as_ref().is_some_and(|g| !g.commits.is_empty());
+        let has_claude = self.claude.as_ref().is_some_and(|c| !c.sessions.is_empty());
+        let has_codex = self.codex.as_ref().is_some_and(|c| !c.sessions.is_empty());
+        !(has_events || has_commits || has_claude || has_codex)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkLog {
+    pub target_date: NaiveDate,
+    /// 수집 데이터를 결정론적으로 정리한 부분.
+    pub facts_markdown: String,
+    /// 최종 문서(요약 + 지표 + 선택적 원본 부록).
+    pub full_markdown: String,
+    pub data: DailyData,
+    /// LLM 이 만든 자연어 요약 (없을 수 있음).
+    pub summary_markdown: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn commit(repo: &str, hash: &str) -> GitCommit {
+        GitCommit {
+            repo: repo.into(),
+            hash: hash.into(),
+            author: "me".into(),
+            when: Utc::now(),
+            subject: "s".into(),
+            files_changed: 1,
+            insertions: 2,
+            deletions: 3,
+            repo_path: String::new(),
+        }
+    }
+
+    #[test]
+    fn short_hash_and_repo_order() {
+        let g = GitData {
+            commits: vec![
+                commit("b", "0123456789abcdef"),
+                commit("a", "abc"),
+                commit("b", "fedcba9876543210"),
+            ],
+        };
+        assert_eq!(g.commits[0].short_hash(), "01234567");
+        assert_eq!(g.commits[1].short_hash(), "abc");
+        assert_eq!(g.repos(), vec!["b", "a"]);
+        assert_eq!(g.commits_for("b").count(), 2);
+    }
+
+    #[test]
+    fn daily_data_empty_and_sessions() {
+        let d = NaiveDate::from_ymd_opt(2026, 7, 6).unwrap();
+        let mut data = DailyData::new(d, "Asia/Seoul");
+        assert!(data.is_empty());
+        // Some(빈 목록) 도 비어 있는 것
+        data.git = Some(GitData::default());
+        data.calendar = Some(CalendarData::default());
+        data.claude = Some(SessionData::default());
+        data.codex = Some(SessionData::default());
+        assert!(data.is_empty());
+
+        data.claude = Some(SessionData {
+            sessions: vec![Session {
+                cwd: Some("D:/a".into()),
+                ..Default::default()
+            }],
+        });
+        data.codex = Some(SessionData {
+            sessions: vec![Session {
+                cwd: Some("D:/a".into()),
+                agent: Agent::Codex,
+                ..Default::default()
+            }],
+        });
+        assert!(!data.is_empty());
+        assert_eq!(data.all_sessions().len(), 2);
+        assert_eq!(data.claude.as_ref().unwrap().cwds(), vec!["D:/a"]);
+
+        let mut only_cal = DailyData::new(d, "Asia/Seoul");
+        only_cal.calendar = Some(CalendarData {
+            events: vec![CalendarEvent::default()],
+        });
+        assert!(!only_cal.is_empty());
+    }
+
+    #[test]
+    fn display_title_fallbacks() {
+        let mut s = Session::default();
+        assert_eq!(s.display_title(), "(제목 없음)");
+        s.intent = Some("아주 긴 요청 ".repeat(20));
+        assert_eq!(s.display_title().chars().count(), 60);
+        s.title = Some(" 제목 ".into());
+        assert_eq!(s.display_title(), "제목");
+    }
+
+    #[test]
+    fn agent_serializes_lowercase_and_tool_order_kept() {
+        assert_eq!(serde_json::to_string(&Agent::Codex).unwrap(), "\"codex\"");
+        let s: Session = serde_json::from_str(r#"{"agent":"codex"}"#).unwrap();
+        assert_eq!(s.agent, Agent::Codex);
+        let s: Session = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.agent, Agent::Claude);
+
+        // 도구 사용 순서(첫 사용 순)가 JSON 왕복에서도 유지된다.
+        let mut s = Session::default();
+        *s.tool_counts.entry("Read".into()).or_insert(0) += 3;
+        *s.tool_counts.entry("Edit".into()).or_insert(0) += 3;
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains(r#""tool_counts":{"Read":3,"Edit":3}"#));
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.tool_counts.keys().collect::<Vec<_>>(),
+            vec!["Read", "Edit"]
+        );
+    }
+}

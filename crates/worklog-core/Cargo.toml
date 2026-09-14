@@ -15,3 +15,37 @@ serde_json.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 tracing.workspace = true
+# SQLite 를 정적으로 링크(bundled) — 사용자 PC 에 DLL 이 없어도 된다.
+rusqlite = { version = "0.40", features = ["bundled"] }
+# 홈·문서 폴더(Windows Known Folder) 해석.
+dirs = "7"
+# 첫 사용 순서를 유지하는 맵(도구 사용량 등 — v1 dict 와 같은 표시 순서).
+indexmap = { version = "2", features = ["serde"] }
+
+# --- 수집기 ---
+# Codex 롤아웃 재귀 탐색.
+walkdir = "2"
+# Codex 압축 롤아웃(.jsonl.zst).
+zstd = "0.14"
+# apply_patch 파일 마커 등.
+regex = "1"
+# git: 인프로세스 revwalk·blob diff (프로세스 spawn 없음).
+gix = { version = "0.87", features = ["blob-diff", "revision"] }
+# 저장소 자동 탐색: 병렬 디렉터리 워커.
+ignore = "0.4"
+# 저장소별 병렬 로그 수집.
+rayon = "1"
+# canonicalize 결과의 \\?\ 접두사 제거.
+dunce = "1"
+# NaverWorks: JWT-bearer(RS256) + HTTPS (rustls, 시스템 프록시 존중).
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "rust_crypto"] }
+# URL 경로 세그먼트 인코딩(사용자 ID 의 '@' 등).
+percent-encoding = "2"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls", "charset", "http2", "system-proxy", "form", "query"] }
+
+[target.'cfg(windows)'.dependencies]
+# 고정 디스크 열거(GetDriveTypeW · QueryDosDeviceW · GetVolumeInformationW · SetErrorMode).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug"] }
+
+[dev-dependencies]
+tempfile = "3"

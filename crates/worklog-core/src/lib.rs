@@ -6,6 +6,12 @@
 //!
 //! 모듈은 `docs/v2-plan.md` 2절의 매핑 순서대로 채운다.
 
+pub mod config;
+pub mod model;
+pub mod paths;
+pub mod store;
+pub mod time;
+
 /// 크레이트 버전 (Cargo.toml `workspace.package.version`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

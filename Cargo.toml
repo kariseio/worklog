@@ -9,7 +9,7 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 repository = "https://github.com/kariseio/worklog"
 authors = ["kariseio"]
 
