@@ -10,15 +10,19 @@ pub mod analyze;
 pub mod collect;
 pub mod config;
 pub mod drives;
+pub mod feed;
+pub mod live;
 pub mod model;
 pub mod notes;
 pub mod output;
 pub mod paths;
 pub mod render;
+pub mod schedule;
 pub mod service;
 pub mod store;
 pub mod summarize;
 pub mod time;
+pub mod watch;
 
 /// 크레이트 버전 (Cargo.toml `workspace.package.version`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

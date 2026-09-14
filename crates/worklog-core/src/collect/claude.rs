@@ -386,7 +386,7 @@ impl ClaudeCollector {
     }
 
     /// 그날 시작 이후에 수정된 `<projects>/*/*.jsonl` 목록.
-    fn candidate_files(&self, projects: &Path, since: &DateTime<Utc>) -> Vec<PathBuf> {
+    pub(crate) fn candidate_files(&self, projects: &Path, since: &DateTime<Utc>) -> Vec<PathBuf> {
         let mut out = Vec::new();
         let Ok(dirs) = fs::read_dir(projects) else {
             return out;

@@ -22,6 +22,10 @@ dirs = "7"
 # 첫 사용 순서를 유지하는 맵(도구 사용량 등 — v1 dict 와 같은 표시 순서).
 indexmap = { version = "2", features = ["serde"] }
 
+# --- 실시간 ---
+# 파일 감시(ReadDirectoryChangesW). 세션 로그·git reflog 변경을 즉시 반영.
+notify = "8"
+
 # --- 수집기 ---
 # Codex 롤아웃 재귀 탐색.
 walkdir = "2"

@@ -221,7 +221,7 @@ impl CodexCollector {
     }
 
     /// 그날 시작 이후 수정된 `rollout-*.jsonl[.zst]` (재귀).
-    fn candidate_files(&self, root: &Path, since: &DateTime<Utc>) -> Vec<PathBuf> {
+    pub(crate) fn candidate_files(&self, root: &Path, since: &DateTime<Utc>) -> Vec<PathBuf> {
         let mut out = Vec::new();
         for entry in walkdir::WalkDir::new(root)
             .follow_links(false)
@@ -246,7 +246,7 @@ impl CodexCollector {
         out
     }
 
-    fn parse(
+    pub(crate) fn parse(
         &self,
         path: &Path,
         ctx: &CollectContext,
