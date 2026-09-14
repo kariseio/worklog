@@ -102,7 +102,7 @@ pub struct Note {
     pub text: String,
     pub tags: Vec<String>,
     pub mentions: Vec<String>,
-    /// app | tray | cli
+    /// app | quick | tray | cli
     pub source: String,
     pub created: DateTime<Utc>,
     pub updated: DateTime<Utc>,

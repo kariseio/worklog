@@ -13,7 +13,10 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
-    sync::OnceLock,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -138,27 +141,41 @@ pub fn resolve_provider(provider: &str) -> Provider {
 
 /// (system, user) 한 번 호출. 테스트에서 가짜로 바꿔 끼운다.
 pub trait LlmCaller: Send + Sync {
-    fn call(&self, system: &str, user: &str, cfg: &SummarizerConfig) -> Option<String>;
+    /// `cancel` 이 켜지면 진행 중인 호출을 가능한 한 빨리 끊고 None 을 돌려준다.
+    fn call(
+        &self,
+        system: &str,
+        user: &str,
+        cfg: &SummarizerConfig,
+        cancel: Option<&AtomicBool>,
+    ) -> Option<String>;
 }
 
 /// 실제 provider 로 호출.
 pub struct RealCaller;
 
 impl LlmCaller for RealCaller {
-    fn call(&self, system: &str, user: &str, cfg: &SummarizerConfig) -> Option<String> {
+    fn call(
+        &self,
+        system: &str,
+        user: &str,
+        cfg: &SummarizerConfig,
+        cancel: Option<&AtomicBool>,
+    ) -> Option<String> {
         match resolve_provider(&cfg.provider) {
-            Provider::ClaudeCli => call_claude_cli(system, user, cfg),
+            Provider::ClaudeCli => call_claude_cli(system, user, cfg, cancel),
             Provider::AnthropicApi => call_anthropic_api(system, user, cfg),
             Provider::None => None,
         }
     }
 }
 
-/// 자식 프로세스에 stdin 을 넣고 stdout 을 받되, 상한 시간이 지나면 죽인다.
+/// 자식 프로세스에 stdin 을 넣고 stdout 을 받되, 상한 시간이 지나거나 취소되면 죽인다.
 fn run_with_timeout(
     mut cmd: Command,
     input: &str,
     timeout: Duration,
+    cancel: Option<&AtomicBool>,
 ) -> Result<(i32, String, String), String> {
     #[cfg(windows)]
     {
@@ -195,6 +212,11 @@ fn run_with_timeout(
         match child.try_wait() {
             Ok(Some(st)) => break st,
             Ok(None) => {
+                if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("취소됨".into());
+                }
                 if started.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -211,7 +233,12 @@ fn run_with_timeout(
     Ok((status.code().unwrap_or(-1), out, err))
 }
 
-fn call_claude_cli(system: &str, user: &str, cfg: &SummarizerConfig) -> Option<String> {
+fn call_claude_cli(
+    system: &str,
+    user: &str,
+    cfg: &SummarizerConfig,
+    cancel: Option<&AtomicBool>,
+) -> Option<String> {
     let Some(exe) = claude_exe() else {
         tracing::warn!("claude CLI 를 찾을 수 없어 요약을 건너뜁니다.");
         return None;
@@ -220,7 +247,7 @@ fn call_claude_cli(system: &str, user: &str, cfg: &SummarizerConfig) -> Option<S
     let full = format!("{WORKLOG_SENTINEL}\n{system}\n\n{user}");
     let mut cmd = Command::new(exe);
     cmd.args(["-p", "--model", &cfg.model]);
-    match run_with_timeout(cmd, &full, CLI_TIMEOUT) {
+    match run_with_timeout(cmd, &full, CLI_TIMEOUT, cancel) {
         Ok((0, out, _)) => {
             let out = out.trim();
             (!out.is_empty()).then(|| out.to_string())
@@ -301,9 +328,14 @@ fn call_anthropic_api(system: &str, user: &str, cfg: &SummarizerConfig) -> Optio
 // 요약기
 // --------------------------------------------------------------------------- //
 
+/// 진행 상황 콜백: ("단계", "세부"). 예: ("요약", "세션 3/7").
+pub type ProgressFn = dyn Fn(&str, &str) + Send + Sync;
+
 pub struct Summarizer {
     cfg: SummarizerConfig,
     caller: Box<dyn LlmCaller>,
+    progress: Option<Arc<ProgressFn>>,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Summarizer {
@@ -311,19 +343,51 @@ impl Summarizer {
         Self {
             cfg,
             caller: Box::new(RealCaller),
+            progress: None,
+            cancel: None,
         }
     }
 
     pub fn with_caller(cfg: SummarizerConfig, caller: Box<dyn LlmCaller>) -> Self {
-        Self { cfg, caller }
+        Self {
+            cfg,
+            caller,
+            progress: None,
+            cancel: None,
+        }
+    }
+
+    /// 단계별 진행 콜백(앱 화면의 "AI 요약 · 세션 3/7").
+    pub fn with_progress(mut self, f: Arc<ProgressFn>) -> Self {
+        self.progress = Some(f);
+        self
+    }
+
+    /// 취소 플래그. 켜지면 다음 LLM 호출부터 건너뛴다(진행 중인 호출은 끝까지 기다림).
+    pub fn with_cancel(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.cancel = Some(flag);
+        self
     }
 
     pub fn provider(&self) -> Provider {
         resolve_provider(&self.cfg.provider)
     }
 
+    fn cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed))
+    }
+
+    fn report(&self, step: &str, detail: &str) {
+        if let Some(p) = &self.progress {
+            p(step, detail);
+        }
+    }
+
     fn call(&self, system: &str, user: &str) -> Option<String> {
-        self.caller.call(system, user, &self.cfg)
+        if self.cancelled() {
+            return None;
+        }
+        self.caller.call(system, user, &self.cfg, self.cancel.as_deref())
     }
 
     /// 단일 호출 요약. provider 가 none 이면 None.
@@ -332,6 +396,7 @@ impl Summarizer {
             tracing::info!("요약기: 사용 안 함 (수집 데이터만 정리)");
             return None;
         }
+        self.report("요약", "종합");
         self.call(SYSTEM_KO, &user_prompt(date_iso, signal, availability))
     }
 
@@ -424,8 +489,16 @@ impl Summarizer {
             .num_threads(workers)
             .build()
             .ok();
+        let total = blocks.len();
+        let done = AtomicUsize::new(0);
+        self.report("요약", &format!("세션 0/{total}"));
         let condense_one = |(label, block): &(String, String)| -> (String, String) {
+            let finished = |me: &Self| {
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                me.report("요약", &format!("세션 {n}/{total}"));
+            };
             if !force_all && block.chars().count() <= small {
+                finished(self);
                 return (label.clone(), block_body(block)); // 작은 세션: 압축 없이 원문(호출 절약)
             }
             let big = if block.chars().count() > self.cfg.map_reduce_chars {
@@ -434,6 +507,7 @@ impl Summarizer {
                 block.clone()
             };
             let summ = self.call(CONDENSE_SYSTEM_KO, &big);
+            finished(self);
             // 최종 압축 실패 시엔 (원문 block 이 아니라) 이미 만든 조각요약 big 으로 폴백.
             (
                 label.clone(),
@@ -496,7 +570,13 @@ mod tests {
     /// system 프롬프트를 기록하고 "요약" 을 돌려주는 가짜 호출기.
     struct Fake(Mutex<Vec<String>>);
     impl LlmCaller for Fake {
-        fn call(&self, system: &str, _user: &str, _cfg: &SummarizerConfig) -> Option<String> {
+        fn call(
+            &self,
+            system: &str,
+            _user: &str,
+            _cfg: &SummarizerConfig,
+            _cancel: Option<&AtomicBool>,
+        ) -> Option<String> {
             self.0.lock().unwrap().push(system.to_string());
             Some("요약".into())
         }

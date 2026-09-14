@@ -42,6 +42,8 @@ pub struct Live {
     codex: BTreeMap<PathBuf, Session>,
     /// git-common-dir → (식별, 그날 커밋)
     git: BTreeMap<String, (RepoIdentity, Vec<GitCommit>)>,
+    /// 저장소 캐시. Some 이면 전체 수집에서 디스크 탐색 대신 이 목록을 쓴다.
+    known_repos: Option<Vec<PathBuf>>,
     calendar: Option<CalendarData>,
     notes: Vec<NoteItem>,
     states: BTreeMap<&'static str, SourceState>,
@@ -66,6 +68,7 @@ impl Live {
             claude: BTreeMap::new(),
             codex: BTreeMap::new(),
             git: BTreeMap::new(),
+            known_repos: None,
             calendar: None,
             notes: Vec::new(),
             states,
@@ -94,6 +97,49 @@ impl Live {
     /// 설정을 바꿔 끼운다(다음 전체 수집부터 반영).
     pub fn set_config(&mut self, cfg: Config) {
         self.cfg = cfg;
+    }
+
+    /// 저장소 캐시 지정. `None` 이면 다음 전체 수집에서 디스크를 탐색한다.
+    pub fn set_known_repos(&mut self, repos: Option<Vec<PathBuf>>) {
+        self.known_repos = repos;
+    }
+
+    pub fn known_repos(&self) -> Option<&[PathBuf]> {
+        self.known_repos.as_deref()
+    }
+
+    /// 현재 알고 있는 저장소와 그날 마지막 커밋 시각(캐시 저장용).
+    pub fn repo_summaries(&self) -> Vec<(RepoIdentity, Option<DateTime<Utc>>)> {
+        self.git
+            .values()
+            .map(|(ident, commits)| (ident.clone(), commits.iter().map(|c| c.when).max()))
+            .collect()
+    }
+
+    /// 세션 cwd 가 아직 모르는 저장소를 가리키면 로그를 읽어 추가한다. 추가된 수를 돌려준다.
+    /// (오늘 새로 만든 저장소도 세션이 열리면 바로 감시·집계된다.)
+    pub fn ensure_session_repos(&mut self) -> usize {
+        let cfg = self.cfg.sources.git.clone();
+        if !cfg.enabled || !cfg.include_claude_cwds {
+            return 0;
+        }
+        let mut added = 0;
+        for cwd in self.session_cwds() {
+            let Some(ident) = identify(Path::new(&cwd)) else {
+                continue;
+            };
+            if self.git.contains_key(&ident.common_dir) {
+                continue;
+            }
+            match log_repo(&ident, &cfg, &self.ctx) {
+                Ok(commits) => {
+                    self.git.insert(ident.common_dir.clone(), (ident, commits));
+                    added += 1;
+                }
+                Err(e) => tracing::warn!("git 로그 실패({}): {e}", ident.path.display()),
+            }
+        }
+        added
     }
 
     /// 대상 날짜가 지났는지(자정을 넘김). true 면 새 `Live` 를 만들어야 한다.
@@ -231,7 +277,7 @@ impl Live {
         self.warnings.insert("codex", warnings);
     }
 
-    fn session_cwds(&self) -> Vec<String> {
+    pub fn session_cwds(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for s in self.claude.values().chain(self.codex.values()) {
             if let Some(c) = &s.cwd
@@ -252,9 +298,11 @@ impl Live {
             return;
         }
         let mut warnings = Vec::new();
-        let repos = GitCollector::new(cfg.clone())
-            .with_extra_repos(self.session_cwds())
-            .resolve_repos(&mut warnings);
+        let mut collector = GitCollector::new(cfg.clone()).with_extra_repos(self.session_cwds());
+        if let Some(known) = &self.known_repos {
+            collector = collector.with_known_repos(known.clone());
+        }
+        let repos = collector.resolve_repos(&mut warnings);
         if repos.is_empty() {
             self.states.insert("git", SourceState::Skipped);
             warnings.insert(0, "건너뜀: 감시할 git 저장소가 없습니다.".into());
@@ -311,14 +359,24 @@ impl Live {
 
     // ---- 증분 갱신 ------------------------------------------------------- //
 
-    /// 감시기가 보낸 변경 배치를 반영한다.
+    /// 감시기가 보낸 변경 배치를 반영한다. 세션 파일이 바뀌었으면 그 세션의 cwd 가 새 저장소인지도 본다.
     pub fn apply_changes(&mut self, changes: &[Changed], now: DateTime<Utc>) -> FeedDelta {
+        let mut session_changed = false;
         for c in changes {
             match c {
-                Changed::ClaudeFile(p) => self.refresh_claude_file_inner(p),
-                Changed::CodexFile(p) => self.refresh_codex_file_inner(p),
+                Changed::ClaudeFile(p) => {
+                    self.refresh_claude_file_inner(p);
+                    session_changed = true;
+                }
+                Changed::CodexFile(p) => {
+                    self.refresh_codex_file_inner(p);
+                    session_changed = true;
+                }
                 Changed::GitRepo(p) => self.refresh_git_repo_inner(p),
             }
+        }
+        if session_changed {
+            self.ensure_session_repos();
         }
         self.rebuild(now)
     }

@@ -27,12 +27,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 
 # 성능 우선 릴리스 프로필: 전체 LTO, 단일 코드젠 유닛, 심볼 제거.
+# panic 은 unwind 유지 — 앱 셸의 catch_unwind / 수집 스레드 join 폴백이 abort 에서는 동작하지 않는다.
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-panic = "abort"
 
 # 개발 중에도 의존성은 최적화해 수집기 벤치가 왜곡되지 않게 한다.
 [profile.dev.package."*"]

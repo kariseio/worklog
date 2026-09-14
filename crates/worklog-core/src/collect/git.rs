@@ -350,6 +350,8 @@ pub struct GitCollector {
     extra_repos: Vec<String>,
     /// 테스트용: `scan_all_drives` 일 때 쓸 드라이브 루트 대체.
     drive_roots_override: Option<Vec<String>>,
+    /// 이미 알고 있는 저장소(캐시). 있으면 디스크 탐색을 건너뛰고 이 목록을 쓴다.
+    known_repos: Option<Vec<PathBuf>>,
 }
 
 impl GitCollector {
@@ -358,7 +360,14 @@ impl GitCollector {
             cfg,
             extra_repos: Vec::new(),
             drive_roots_override: None,
+            known_repos: None,
         }
+    }
+
+    /// 디스크 탐색 대신 캐시된 저장소 목록을 쓴다(설정 `repos` 와 세션 cwd 는 그대로 더해진다).
+    pub fn with_known_repos(mut self, repos: Vec<PathBuf>) -> Self {
+        self.known_repos = Some(repos);
+        self
     }
 
     pub fn with_extra_repos(mut self, cwds: Vec<String>) -> Self {
@@ -388,21 +397,25 @@ impl GitCollector {
             }
         }
 
-        let roots: Vec<PathBuf> = if self.cfg.scan_all_drives {
-            self.drive_roots_override
-                .clone()
-                .unwrap_or_else(fixed_drives)
-                .into_iter()
-                .map(PathBuf::from)
-                .collect()
+        if let Some(known) = &self.known_repos {
+            candidates.extend(known.iter().cloned());
         } else {
-            self.cfg
-                .scan_roots
-                .iter()
-                .map(|r| paths::expand_user(r))
-                .collect()
-        };
-        candidates.extend(scan::scan_roots(&roots, self.cfg.scan_depth));
+            let roots: Vec<PathBuf> = if self.cfg.scan_all_drives {
+                self.drive_roots_override
+                    .clone()
+                    .unwrap_or_else(fixed_drives)
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect()
+            } else {
+                self.cfg
+                    .scan_roots
+                    .iter()
+                    .map(|r| paths::expand_user(r))
+                    .collect()
+            };
+            candidates.extend(scan::scan_roots(&roots, self.cfg.scan_depth));
+        }
 
         if self.cfg.include_claude_cwds {
             // cwd 가 저장소 하위폴더여도 되도록 .git 검사 없이 후보로 넣는다(discover 가 위로 올라감).

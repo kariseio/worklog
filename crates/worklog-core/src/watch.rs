@@ -66,10 +66,36 @@ pub fn classify(targets: &WatchTargets, path: &Path) -> Option<Changed> {
         .map(|g| Changed::GitRepo(g.clone()))
 }
 
-/// 감시기. 드롭하면 감시가 멈춘다.
-pub struct FileWatcher {
+/// 감시 핸들 — 수신 채널을 뗀 나머지(감시 대상 갱신용). 드롭하면 감시가 멈춘다.
+pub struct WatchHandle {
     watcher: RecommendedWatcher,
     targets: WatchTargets,
+}
+
+impl WatchHandle {
+    pub fn targets(&self) -> &WatchTargets {
+        &self.targets
+    }
+
+    /// 저장소 감시 목록 갱신(새로 발견된 저장소 추가, 사라진 것 제거).
+    pub fn set_git_dirs(&mut self, dirs: Vec<PathBuf>) {
+        let new: BTreeSet<PathBuf> = dirs.iter().map(|p| normalize(p)).collect();
+        let old: BTreeSet<PathBuf> = self.targets.git_common_dirs.iter().cloned().collect();
+        for gone in old.difference(&new) {
+            for sub in ["logs", "worktrees"] {
+                let _ = self.watcher.unwatch(&gone.join(sub));
+            }
+        }
+        for added in new.difference(&old) {
+            watch_git_dir(&mut self.watcher, added);
+        }
+        self.targets.git_common_dirs = new.into_iter().collect();
+    }
+}
+
+/// 감시기. 드롭하면 감시가 멈춘다.
+pub struct FileWatcher {
+    handle: WatchHandle,
     rx: mpsc::Receiver<Vec<Changed>>,
 }
 
@@ -111,8 +137,7 @@ impl FileWatcher {
             .map_err(|e| notify::Error::generic(&e.to_string()))?;
 
         Ok(Self {
-            watcher,
-            targets,
+            handle: WatchHandle { watcher, targets },
             rx,
         })
     }
@@ -123,22 +148,17 @@ impl FileWatcher {
     }
 
     pub fn targets(&self) -> &WatchTargets {
-        &self.targets
+        self.handle.targets()
     }
 
     /// 저장소 감시 목록 갱신(새로 발견된 저장소 추가, 사라진 것 제거).
     pub fn set_git_dirs(&mut self, dirs: Vec<PathBuf>) {
-        let new: BTreeSet<PathBuf> = dirs.iter().map(|p| normalize(p)).collect();
-        let old: BTreeSet<PathBuf> = self.targets.git_common_dirs.iter().cloned().collect();
-        for gone in old.difference(&new) {
-            for sub in ["logs", "worktrees"] {
-                let _ = self.watcher.unwatch(&gone.join(sub));
-            }
-        }
-        for added in new.difference(&old) {
-            watch_git_dir(&mut self.watcher, added);
-        }
-        self.targets.git_common_dirs = new.into_iter().collect();
+        self.handle.set_git_dirs(dirs);
+    }
+
+    /// 감시 핸들과 수신 채널을 분리한다 — 수신은 다른 스레드에서, 대상 갱신은 소유자가.
+    pub fn into_parts(self) -> (WatchHandle, mpsc::Receiver<Vec<Changed>>) {
+        (self.handle, self.rx)
     }
 }
 
