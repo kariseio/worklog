@@ -1,0 +1,24 @@
+[package]
+name = "worklog-app"
+description = "업무일지 데스크톱 앱 (Tauri 2)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+# Tauri 관례: 라이브러리 이름이 바이너리와 겹치지 않게 _lib 접미사.
+name = "worklog_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+worklog-core.workspace = true
+tauri = { version = "2", features = ["tray-icon"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

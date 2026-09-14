@@ -27,3 +27,10 @@ build/
 
 # 버전별 exe 보관 폴더 — 바이너리는 git 에 안 올림(용량). 폴더/README 는 추적.
 releases/*.exe
+
+# Rust / Tauri (v2)
+/target/
+apps/desktop/node_modules/
+apps/desktop/dist/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/

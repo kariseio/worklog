@@ -1,0 +1,27 @@
+:root {
+  color-scheme: light dark;
+  font-family: "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+  background: #faf9f7;
+  color: #28271f;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #1c1b18;
+    color: #eceae2;
+  }
+}
+
+.shell {
+  padding: 24px;
+}
+
+.muted {
+  opacity: 0.65;
+}

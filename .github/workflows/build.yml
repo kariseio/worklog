@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      - name: Frontend deps
+        run: pnpm install --frozen-lockfile
+        working-directory: apps/desktop
+
+      - name: Frontend build
+        run: pnpm build
+        working-directory: apps/desktop
+
+      - name: Core tests
+        run: cargo test --workspace --exclude worklog-app
+
+      - name: App build (no bundle)
+        run: cargo build -p worklog-app --release

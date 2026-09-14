@@ -1,0 +1,17 @@
+[package]
+name = "worklog-core"
+description = "업무일지 v2 핵심 라이브러리: 수집·분석·렌더·요약·저장·감시"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+tracing.workspace = true

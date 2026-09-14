@@ -1,0 +1,19 @@
+[package]
+name = "worklog-cli"
+description = "업무일지 v2 명령줄 도구"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "worklog"
+path = "src/main.rs"
+
+[dependencies]
+worklog-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
