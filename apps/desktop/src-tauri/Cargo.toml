@@ -18,7 +18,16 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 worklog-core.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
+# 단일 인스턴스는 가장 먼저 등록해야 한다(두 번째 실행 → 기존 창 앞으로).
+tauri-plugin-single-instance = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
 serde.workspace = true
 serde_json.workspace = true
+chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

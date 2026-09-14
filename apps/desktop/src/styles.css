@@ -25,3 +25,92 @@ body {
 .muted {
   opacity: 0.65;
 }
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+
+.row input {
+  flex: 1;
+  min-width: 240px;
+  padding: 6px 8px;
+}
+
+.err {
+  color: #c0392b;
+}
+
+.feed {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+.feed li {
+  display: flex;
+  gap: 10px;
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.feed li.active {
+  background: rgba(46, 204, 113, 0.12);
+}
+
+.feed .time {
+  width: 44px;
+  opacity: 0.7;
+}
+
+.feed .kind {
+  width: 56px;
+  opacity: 0.7;
+}
+
+.feed .proj {
+  width: 140px;
+  font-weight: 600;
+}
+
+/* 빠른 메모 팝업 */
+.quick {
+  height: 100vh;
+  box-sizing: border-box;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #fffdf8;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+@media (prefers-color-scheme: dark) {
+  .quick {
+    background: #24231f;
+    border-color: rgba(255, 255, 255, 0.15);
+  }
+}
+
+.quick-bar {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 600;
+  cursor: default;
+  user-select: none;
+}
+
+.quick-input {
+  font-size: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+}
+
+.quick-foot {
+  min-height: 20px;
+  font-size: 12px;
+}

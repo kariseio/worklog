@@ -1,27 +1,33 @@
 //! 데스크톱 앱 셸(Tauri 2).
 //!
-//! 0단계: 창 하나 + 트레이(열기/종료) + 닫기→트레이 + `app_version` 커맨드.
-//! 5단계에서 단일 인스턴스·알림·자동 시작·전역 단축키·업데이터와 IPC 커맨드를 채운다.
+//! - 창 두 개: `main`(오늘·일지·설정) · `quick`(빠른 메모 팝업, 전역 단축키)
+//! - 트레이 상주: 메인 창 닫기 = 창 파괴(WebView 해제), 다시 열면 재생성. 종료는 트레이 메뉴.
+//!   빠른 메모 창은 즉시 떠야 하므로 숨겨 둔 채 상주한다.
+//! - 단일 인스턴스: 두 번째 실행(알림 클릭 포함) → 기존 창 앞으로
+//! - 엔진 스레드([`worker`]): 파일 감시 · 주기 보정 · 정해진 시각 동작
+//! - 생성 작업([`generate`]): 동시 1개, 진행 이벤트, 취소
+//! - 플러그인: 알림 · 자동 시작(`--minimized`) · 전역 단축키 · 업데이터 · 대화상자 · 열기
 
-use tauri::{
-    Manager, WindowEvent,
-    menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+mod commands;
+mod generate;
+mod shell;
+mod state;
+mod worker;
+
+use std::{sync::mpsc, thread, time::Duration};
+
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
+use tauri_plugin_global_shortcut::ShortcutState;
+use worklog_core::{
+    config::{Config, LoadStatus},
+    paths,
+    store::Store,
 };
 
-/// 코어 라이브러리 버전 (UI 가 IPC 연결 확인용으로 호출).
-#[tauri::command]
-fn app_version() -> &'static str {
-    worklog_core::version()
-}
+use state::AppState;
 
-fn show_main(app: &tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
-}
+/// 시작 후 이만큼 지나 조용히 새 버전을 확인한다(있으면 `update:available`).
+const UPDATE_CHECK_DELAY: Duration = Duration::from_secs(20);
 
 pub fn run() {
     tracing_subscriber::fmt()
@@ -32,43 +38,178 @@ pub fn run() {
         .without_time()
         .init();
 
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![app_version])
-        .setup(|app| {
-            let open = MenuItem::with_id(app, "open", "열기", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+    let minimized = std::env::args().any(|a| a == "--minimized");
 
-            TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().cloned().expect("기본 아이콘"))
-                .tooltip("업무일지")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show_main(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main(tray.app_handle());
+    let app = tauri::Builder::default()
+        // 반드시 첫 플러그인: 두 번째 인스턴스는 여기서 기존 창을 띄우고 바로 끝난다.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            shell::show_main(app);
+        }))
+        .plugin(tauri_plugin_notification::init())
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .args(["--minimized"])
+                .build(),
+        )
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        shell::toggle_quick(app);
                     }
                 })
-                .build(app)?;
+                .build(),
+        )
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            commands::app_info,
+            commands::app_version,
+            commands::app_quit,
+            commands::feed_today,
+            commands::refresh_now,
+            commands::refresh_calendar,
+            commands::rescan_repos,
+            commands::note_add,
+            commands::note_edit,
+            commands::note_delete,
+            commands::notes_for,
+            commands::generate_start,
+            commands::generate_cancel,
+            commands::generate_status,
+            commands::runs_recent,
+            commands::document_get,
+            commands::document_save,
+            commands::document_dates,
+            commands::document_calendar,
+            commands::settings_get,
+            commands::settings_set,
+            commands::test_connection,
+            commands::naverworks_calendars,
+            commands::open_path,
+            commands::pick_path,
+            commands::drives,
+            commands::update_check,
+            commands::update_install,
+            commands::show_main,
+            commands::quick_show,
+            commands::quick_hide,
+        ])
+        .setup(move |app| {
+            // 설정 · 저장소
+            let loaded = Config::load_with_status();
+            match &loaded.status {
+                LoadStatus::Loaded => {}
+                LoadStatus::Missing => tracing::info!(
+                    "설정 파일 없음 — 기본값으로 시작: {}",
+                    paths::settings_path().display()
+                ),
+                LoadStatus::CorruptedBackedUp(e) => {
+                    tracing::warn!("설정 파일 손상(.json.bak 으로 보관) — 기본값으로 시작: {e}")
+                }
+                LoadStatus::ReadFailed(e) => {
+                    tracing::error!("설정 파일 읽기 실패 — 저장을 막습니다: {e}")
+                }
+            }
+            let mut cfg = loaded.config;
+            cfg.normalize();
+            let store = Store::open(&paths::db_path()).map_err(|e| e.to_string());
+            match &store {
+                Ok(s) => abandon_stale_runs(s),
+                Err(e) => tracing::error!(
+                    "메모 저장소 열기 실패({}): {e}",
+                    paths::db_path().display()
+                ),
+            }
+
+            let (tx, rx) = mpsc::channel();
+            app.manage(AppState::new(cfg.clone(), loaded.status, store, tx.clone()));
+
+            shell::build_tray(app)?;
+            let handle = app.handle().clone();
+            if let Err(e) = shell::apply_shortcut(&handle, "", &cfg.automation.global_shortcut) {
+                tracing::warn!("{e}");
+            }
+            if let Err(e) = shell::apply_autostart(&handle, cfg.automation.autostart) {
+                tracing::warn!("자동 시작 설정 동기화 실패: {e}");
+            }
+            worker::spawn(handle.clone(), tx, rx);
+
+            if minimized {
+                tracing::info!("--minimized: 트레이로 시작");
+                // 설정 파일에서 만들어진 메인 창은 숨김 상태 — WebView 를 붙들지 않게 닫는다.
+                if let Some(w) = app.get_webview_window(shell::MAIN) {
+                    let _ = w.destroy();
+                }
+            } else {
+                shell::show_main(&handle);
+            }
+            spawn_update_check(handle);
             Ok(())
         })
-        // 창 닫기 = 트레이로 숨김. 종료는 트레이 메뉴에서만.
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match (window.label(), event) {
+            // 빠른 메모 팝업: 닫기 = 숨김(상주), 포커스를 잃으면 잠시 뒤 숨김.
+            (shell::QUICK, WindowEvent::CloseRequested { api, .. }) => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            (shell::QUICK, WindowEvent::Focused(false)) => {
+                shell::hide_quick_if_unfocused(window.app_handle());
+            }
+            // 메인 창: 닫기를 그대로 두어 창(WebView)을 파괴한다. 앱은 트레이에 남는다(아래 ExitRequested).
+            _ => {}
         })
-        .run(tauri::generate_context!())
-        .expect("업무일지 앱 실행 실패");
+        .build(tauri::generate_context!())
+        .expect("업무일지 앱 빌드 실패");
+
+    app.run(|_app, event| {
+        // 마지막 창이 닫혀도 프로세스는 남긴다. 트레이 '종료'(app.exit)는 code 가 Some 이라 통과.
+        if let RunEvent::ExitRequested { code: None, api, .. } = event {
+            api.prevent_exit();
+        }
+    });
+}
+
+/// 앱이 죽어 `running` 으로 남은 실행 기록을 정리한다.
+fn abandon_stale_runs(store: &Store) {
+    match store.runs_running() {
+        Ok(runs) => {
+            for r in runs {
+                if let Err(e) = store.run_abandon(r.id, Some("앱 종료로 중단됨")) {
+                    tracing::warn!("실행 기록 정리 실패(run {}): {e}", r.id);
+                }
+            }
+        }
+        Err(e) => tracing::warn!("실행 기록 조회 실패: {e}"),
+    }
+}
+
+fn spawn_update_check(app: tauri::AppHandle) {
+    let _ = thread::Builder::new()
+        .name("worklog-update-check".into())
+        .spawn(move || {
+            thread::sleep(UPDATE_CHECK_DELAY);
+            use tauri_plugin_updater::UpdaterExt as _;
+            let Ok(updater) = app.updater() else {
+                tracing::debug!("업데이트 endpoint 미설정 — 확인 생략");
+                return;
+            };
+            match tauri::async_runtime::block_on(updater.check()) {
+                Ok(Some(u)) => {
+                    tracing::info!("새 버전 {} (현재 {})", u.version, u.current_version);
+                    let _ = app.emit(
+                        "update:available",
+                        commands::UpdateInfo {
+                            version: u.version.clone(),
+                            current: u.current_version.clone(),
+                            notes: u.body.clone(),
+                            date: u.date.map(|d| d.to_string()),
+                        },
+                    );
+                }
+                Ok(None) => tracing::debug!("최신 버전입니다."),
+                Err(e) => tracing::debug!("업데이트 확인 실패(무시): {e}"),
+            }
+        });
 }

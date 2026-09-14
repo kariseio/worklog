@@ -1,9 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "메인 창 기본 권한",
-  "windows": ["main"],
+  "description": "메인 창 · 빠른 메모 창 기본 권한 (플러그인은 Rust 쪽에서만 쓴다)",
+  "windows": ["main", "quick"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-center"
   ]
 }
