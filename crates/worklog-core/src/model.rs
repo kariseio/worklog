@@ -184,6 +184,24 @@ pub struct CalendarData {
 }
 
 // --------------------------------------------------------------------------- //
+// 메모 (사용자가 직접 남긴 구두 요청·결정·할 일)
+// --------------------------------------------------------------------------- //
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NoteItem {
+    pub id: i64,
+    pub ts: DateTime<Utc>,
+    pub text: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    /// app | tray | cli
+    #[serde(default)]
+    pub source: String,
+}
+
+// --------------------------------------------------------------------------- //
 // 하루치 종합 + 최종 산출물
 // --------------------------------------------------------------------------- //
 
@@ -195,6 +213,9 @@ pub struct DailyData {
     pub claude: Option<SessionData>,
     pub codex: Option<SessionData>,
     pub calendar: Option<CalendarData>,
+    /// 그날 메모(시간순). 자동 수집이 아니라 사용자가 직접 남긴 1차 사실.
+    #[serde(default)]
+    pub notes: Vec<NoteItem>,
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -208,6 +229,7 @@ impl DailyData {
             claude: None,
             codex: None,
             calendar: None,
+            notes: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -230,7 +252,7 @@ impl DailyData {
         let has_commits = self.git.as_ref().is_some_and(|g| !g.commits.is_empty());
         let has_claude = self.claude.as_ref().is_some_and(|c| !c.sessions.is_empty());
         let has_codex = self.codex.as_ref().is_some_and(|c| !c.sessions.is_empty());
-        !(has_events || has_commits || has_claude || has_codex)
+        !(has_events || has_commits || has_claude || has_codex || !self.notes.is_empty())
     }
 }
 
@@ -313,6 +335,17 @@ mod tests {
             events: vec![CalendarEvent::default()],
         });
         assert!(!only_cal.is_empty());
+        // 메모만 있어도 요약 대상
+        let mut only_note = DailyData::new(d, "Asia/Seoul");
+        only_note.notes.push(NoteItem {
+            id: 1,
+            ts: Utc::now(),
+            text: "구두 요청".into(),
+            tags: vec![],
+            mentions: vec![],
+            source: "app".into(),
+        });
+        assert!(!only_note.is_empty());
     }
 
     #[test]

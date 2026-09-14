@@ -107,6 +107,7 @@ pub fn render_facts(data: &DailyData, tz: Tz) -> String {
         data.codex.as_ref().map(|c| c.sessions.as_slice()),
         false,
     );
+    facts_notes(&mut lines, data, tz);
 
     if !data.warnings.is_empty() {
         lines.push("## ⚠️ 수집 경고".into());
@@ -157,6 +158,23 @@ fn facts_calendar(lines: &mut Vec<String>, data: &DailyData, tz: Tz) {
             format!(" ({})", extra.join(", "))
         };
         lines.push(format!("- **{when}** {title}{suffix}"));
+    }
+    lines.push(String::new());
+}
+
+/// 사용자가 직접 남긴 메모. 없으면 섹션을 만들지 않는다(v1 출력과 동일하게).
+fn facts_notes(lines: &mut Vec<String>, data: &DailyData, tz: Tz) {
+    if data.notes.is_empty() {
+        return;
+    }
+    lines.push("## 📝 메모".into());
+    for n in &data.notes {
+        lines.push(format!(
+            "- **{}** {}{}",
+            fmt_time(Some(&n.ts), tz),
+            n.text,
+            crate::notes::trailer(n)
+        ));
     }
     lines.push(String::new());
 }
@@ -308,8 +326,13 @@ pub fn render_analysis(a: &Analysis) -> String {
     } else {
         String::new()
     };
+    let notes = if k.notes > 0 {
+        format!(" · 메모 {}건", k.notes)
+    } else {
+        String::new()
+    };
     lines.push(format!(
-        "- 커밋 **{}** (+{}/−{}) · 저장소 {} · AI **{}세션** · 출력 {}{mtg}{span}",
+        "- 커밋 **{}** (+{}/−{}) · 저장소 {} · AI **{}세션** · 출력 {}{mtg}{notes}{span}",
         k.commits,
         fmt_thousands(k.insertions),
         fmt_thousands(k.deletions),
@@ -384,6 +407,7 @@ pub fn render_analysis(a: &Analysis) -> String {
                     lines.push(format!("- `{when}` 💾 {tag}{} · {}", e.label, e.project));
                 }
                 "meeting" => lines.push(format!("- `{when}` 📅 {}", e.label)),
+                "note" => lines.push(format!("- `{when}` 📝 {}", e.label)),
                 _ => lines.push(format!("- `{when}` 🤖 {} · {}", e.label, e.project)),
             }
         }
@@ -408,9 +432,10 @@ pub fn render_timeline_for_llm(a: &Analysis) -> String {
             "session" => "작업",
             "commit" => "커밋",
             "meeting" => "회의",
+            "note" => "메모",
             other => other,
         };
-        let proj = if e.kind == "meeting" {
+        let proj = if e.kind == "meeting" || e.kind == "note" {
             String::new()
         } else {
             format!(" · {}", e.project)
@@ -529,6 +554,19 @@ pub fn render_work_signal(data: &DailyData, tz: Tz, header: &str) -> String {
             lines.push(format!(
                 "- {when} {}{loc}",
                 e.title.as_deref().unwrap_or("")
+            ));
+        }
+        lines.push(String::new());
+    }
+
+    if !data.notes.is_empty() {
+        lines.push("## 메모 (사용자가 직접 남긴 1차 사실 · 구두 요청·결정·할 일)".into());
+        for n in &data.notes {
+            lines.push(format!(
+                "- {} {}{}",
+                fmt_time(Some(&n.ts), tz),
+                squash_ws(&n.text),
+                crate::notes::trailer(n)
             ));
         }
         lines.push(String::new());
@@ -952,6 +990,39 @@ mod tests {
         assert!(txt.contains("- 10:30–11:00 [회의] 회의A\n"));
         assert!(txt.contains("[커밋]") && txt.contains("[작업]"));
         assert_eq!(render_timeline_for_llm(&Analysis::default()), "");
+    }
+
+    #[test]
+    fn notes_appear_in_facts_signal_and_timeline() {
+        let tz = get_tz("Asia/Seoul");
+        let mut d = DailyData::new(NaiveDate::from_ymd_opt(2026, 9, 4).unwrap(), "Asia/Seoul");
+        d.notes.push(crate::model::NoteItem {
+            id: 7,
+            ts: parse_iso("2026-09-04T01:35:00Z").unwrap(),
+            text: "김팀장 구두 요청 — 결제 API 타임아웃\n3초→10초".into(),
+            tags: vec!["요청".into()],
+            mentions: vec!["김팀장".into()],
+            source: "app".into(),
+        });
+        let facts = render_facts(&d, tz);
+        assert!(facts.contains("## 📝 메모\n- **10:35** 김팀장 구두 요청 — 결제 API 타임아웃\n3초→10초 [#요청 @김팀장]\n"));
+        let sig = render_work_signal(&d, tz, "");
+        assert!(sig.starts_with("## 메모 (사용자가 직접 남긴 1차 사실 · 구두 요청·결정·할 일)\n- 10:35 김팀장 구두 요청 — 결제 API 타임아웃 3초→10초 [#요청 @김팀장]\n"));
+        let a = analyze(&d, tz);
+        assert_eq!(a.kpis.notes, 1);
+        assert_eq!(a.timeline.len(), 1);
+        assert_eq!(a.timeline[0].kind, "note");
+        assert_eq!(a.timeline[0].start, "10:35");
+        let md = render_analysis(&a);
+        assert!(md.contains("· 메모 1건"));
+        assert!(md.contains("## 🕐 타임라인\n- `10:35` 📝 김팀장 구두 요청 — 결제 API 타임아웃\n3초→10초 [#요청 @김팀장]"));
+        let txt = render_timeline_for_llm(&a);
+        assert!(txt.contains("- 10:35 [메모] 김팀장 구두 요청"));
+        assert!(!txt.contains("· 메모\n"));
+        // 메모가 없으면 어떤 섹션도 생기지 않는다(v1 출력과 동일)
+        let empty = DailyData::new(d.target_date, "Asia/Seoul");
+        assert!(!render_facts(&empty, tz).contains("메모"));
+        assert!(!render_analysis(&analyze(&empty, tz)).contains("메모"));
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub mod collect;
 pub mod config;
 pub mod drives;
 pub mod model;
+pub mod notes;
 pub mod output;
 pub mod paths;
 pub mod render;

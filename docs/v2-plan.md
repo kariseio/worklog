@@ -124,7 +124,16 @@ kv         (key PK, value)                                    -- 마지막 전�
 | 단계 | 상태 | 비고 |
 |---|---|---|
 | 0 툴체인·뼈대 | 완료 (2026-09-14) | `cargo build --workspace` 1m57s(첫 빌드), `pnpm tauri build` → `업무일지_0.2.0_x64-setup.exe`(1.5MB), 단독 exe 5.1MB, 창 뜬 상태 메인 프로세스 25MB. CI: `.github/workflows/build.yml` |
-| 1 코어 기반 | 대기 | |
+| 1 코어 기반 | 완료 (2026-09-14, `38afc15`) | model·config·time·paths·store. 4관점 적대적 리뷰 20건 반영. 실제 `settings.json` 을 Python/Rust 로더로 읽어 39개 필드 일치 |
+| 2 수집기 | 완료 (2026-09-14, `097afbf`) | claude·codex·git(gix)·naverworks·scan·drives. Python 수집기 테스트 이식 |
+| 3 파이프라인·CLI | 완료 (2026-09-14, `d1a7de1`) | analyze·render·summarize·output·service·CLI. 골든 비교: 9/10·9/11·9/12 `--dry-run --no-llm` 출력이 Python 과 동일(끝의 빈 줄 1개 제외). 같은 날짜 소요: Python 13~24초 → Rust 1.1~3.5초. 코어 테스트 100개 |
+| 4 메모·감시·스케줄 | 진행 중 | notes.rs 작성됨(미연결) |
+
+### 파이프라인 결정 사항(3단계에서 확정)
+- 캘린더(NaverWorks)의 오프셋 없는 시각은 **설정 시간대의 로컬 시각**으로 해석(`time::parse_iso_in`). v1 은 시스템 로컬로 해석했고 결과는 같다. Claude/Codex 타임스탬프는 항상 `Z` 라 무관.
+- git 로그는 gix `ByCommitTime(NewestFirst)` 로 걷다가 대상일보다 오래된 커밋이 연속 5개 나오면 멈춘다(git `--since` 의 slop 과 동일). `ByCommitTimeCutoff` 는 amend 로 자식이 부모보다 오래된 경우 오늘 커밋을 놓쳐 쓰지 않는다.
+- numstat 은 첫 부모와의 tree diff 로 계산하고 바이너리는 파일 수에만 든다. 실제 저장소 3곳에서 `git log --numstat` 합계와 일치했다.
+- 저장 마크다운은 LF 로 쓴다(v1 은 Windows 텍스트 모드라 CRLF). Obsidian·Notion 모두 무관.
 
 ## 10. 이 PC 준비 상태 (2026-09-14 확인)
 

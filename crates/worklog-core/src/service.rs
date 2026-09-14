@@ -17,14 +17,17 @@ use crate::{
         codex::CodexCollector, git::GitCollector, naverworks::NaverWorksCollector,
     },
     config::{Config, SOURCE_NAMES},
-    model::{DailyData, WorkLog},
+    model::{DailyData, NoteItem, WorkLog},
+    notes,
     output::{
         Sink, SinkResult, markdown::MarkdownSink, notion::NotionSink, obsidian::ObsidianSink,
     },
+    paths,
     render::{
         is_meta_session, render_analysis, render_facts, render_session_blocks,
         render_session_section, render_timeline_for_llm, render_work_signal,
     },
+    store::Store,
     summarize::Summarizer,
     time::{TimeError, fmt_time, get_tz, parse_iso_in, resolve_day},
 };
@@ -89,8 +92,15 @@ fn session_count(d: &crate::model::SessionData) -> usize {
 }
 
 /// 소스들을 수집한다. Claude 로그를 먼저(git 자동탐색에 cwd 를 넘기므로), 나머지는 병렬로.
-pub fn collect(cfg: &Config, ctx: &CollectContext, sources: &[&str]) -> Collected {
+/// `notes` 는 그날 메모(저장소에서 읽어 넘김).
+pub fn collect(
+    cfg: &Config,
+    ctx: &CollectContext,
+    sources: &[&str],
+    notes: Vec<NoteItem>,
+) -> Collected {
     let mut data = DailyData::new(ctx.target_date(), cfg.timezone.clone());
+    data.notes = notes;
     let mut statuses: IndexMap<&str, SourceStatus> = ALL_SOURCES
         .iter()
         .map(|n| (*n, SourceStatus::disabled(n)))
@@ -430,7 +440,21 @@ pub struct GenerateResult {
     pub rendered: Rendered,
 }
 
-/// 수집 → (정제 신호) 요약 → 조합까지 한 번에. (저장은 별도)
+/// 기본 경로의 메모 저장소를 연다. 실패하면 경고 후 None(메모 없이 진행).
+pub fn open_store() -> Option<Store> {
+    match Store::open(&paths::db_path()) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            tracing::warn!(
+                "메모 저장소를 열 수 없습니다({}): {e}",
+                paths::db_path().display()
+            );
+            None
+        }
+    }
+}
+
+/// 수집 → (정제 신호) 요약 → 조합까지 한 번에. (저장은 별도) 메모는 기본 저장소에서 읽는다.
 pub fn generate(
     cfg: &Config,
     date_spec: Option<&str>,
@@ -438,7 +462,8 @@ pub fn generate(
     sources: Option<&[String]>,
 ) -> Result<GenerateResult, TimeError> {
     let summarizer = Summarizer::new(cfg.summarizer.clone());
-    generate_with(cfg, date_spec, no_llm, sources, &summarizer)
+    let store = open_store();
+    generate_with(cfg, date_spec, no_llm, sources, &summarizer, store.as_ref())
 }
 
 pub fn generate_with(
@@ -447,10 +472,12 @@ pub fn generate_with(
     no_llm: bool,
     sources: Option<&[String]>,
     summarizer: &Summarizer,
+    store: Option<&Store>,
 ) -> Result<GenerateResult, TimeError> {
     let ctx = make_context(cfg, date_spec)?;
     let wanted = enabled_sources(cfg, sources);
-    let Collected { data, statuses } = collect(cfg, &ctx, &wanted);
+    let note_items = notes::items_for(store, ctx.target_date());
+    let Collected { data, statuses } = collect(cfg, &ctx, &wanted, note_items);
     let rendered = render_all(cfg, &data, &statuses, ctx.tz());
     let summary = if !no_llm && !data.is_empty() {
         summarizer.summarize_day(
@@ -609,7 +636,15 @@ pub fn to_evidence(data: &DailyData, tz: Tz) -> Value {
             json!({"title": e.title, "when": when, "location": e.location, "attendees": e.attendees.len()})
         })
         .collect();
-    json!({"git": git, "claude": claude, "codex": codex, "calendar": calendar})
+    let notes: Vec<Value> = data
+        .notes
+        .iter()
+        .map(|n| {
+            json!({"id": n.id, "time": fmt_time(Some(&n.ts), tz), "text": n.text,
+                   "tags": n.tags, "mentions": n.mentions, "source": n.source})
+        })
+        .collect();
+    json!({"git": git, "claude": claude, "codex": codex, "calendar": calendar, "notes": notes})
 }
 
 #[cfg(test)]
@@ -708,7 +743,7 @@ mod tests {
         cfg.sources.git.scan_roots = vec![];
         cfg.sources.naverworks.enabled = false;
         let ctx = make_context(&cfg, Some("2026-07-06")).unwrap();
-        let c = collect(&cfg, &ctx, &enabled_sources(&cfg, None));
+        let c = collect(&cfg, &ctx, &enabled_sources(&cfg, None), vec![]);
         let by: HashMap<&str, &SourceStatus> =
             c.statuses.iter().map(|s| (s.name.as_str(), s)).collect();
         assert_eq!(

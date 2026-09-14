@@ -115,6 +115,8 @@ pub struct Kpis {
     pub tokens: u64,
     pub files_edited: u32,
     pub meetings: u32,
+    /// 사용자가 직접 남긴 메모 수.
+    pub notes: u32,
     pub span_start: Option<String>,
     pub span_end: Option<String>,
 }
@@ -285,6 +287,17 @@ pub fn analyze(data: &DailyData, tz: Tz) -> Analysis {
         });
     }
     events.extend(meeting_events(data, tz, &mut a.kpis));
+    for n in &data.notes {
+        events.push(TimelineEvent {
+            kind: "note".into(),
+            start: hm(&n.ts, tz),
+            end: None,
+            project: "메모".into(),
+            label: take_chars(&format!("{}{}", n.text, crate::notes::trailer(n)), 70),
+            ctype: None,
+        });
+    }
+    a.kpis.notes = data.notes.len() as u32;
     events.sort_by(|x, y| x.start.cmp(&y.start));
     a.timeline = events;
 
