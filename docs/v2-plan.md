@@ -127,7 +127,8 @@ kv         (key PK, value)                                    -- 마지막 전�
 | 1 코어 기반 | 완료 (2026-09-14, `38afc15`) | model·config·time·paths·store. 4관점 적대적 리뷰 20건 반영. 실제 `settings.json` 을 Python/Rust 로더로 읽어 39개 필드 일치 |
 | 2 수집기 | 완료 (2026-09-14, `097afbf`) | claude·codex·git(gix)·naverworks·scan·drives. Python 수집기 테스트 이식 |
 | 3 파이프라인·CLI | 완료 (2026-09-14, `d1a7de1`) | analyze·render·summarize·output·service·CLI. 골든 비교: 9/10·9/11·9/12 `--dry-run --no-llm` 출력이 Python 과 동일(끝의 빈 줄 1개 제외). 같은 날짜 소요: Python 13~24초 → Rust 1.1~3.5초. 코어 테스트 100개 |
-| 4 메모·감시·스케줄 | 진행 중 | notes.rs 작성됨(미연결) |
+| 4 메모·감시·스케줄 | 완료 (2026-09-14) | notes(메모 → 파이프라인·CLI `note`/`notes`), feed(피드·델타), watch(notify 감시·디바운스), live(소스별 증분 갱신 엔진), schedule(발동 시각 계산). 코어 테스트 112개 |
+| 5 Tauri 셸 | 진행 중 | |
 
 ### 파이프라인 결정 사항(3단계에서 확정)
 - 캘린더(NaverWorks)의 오프셋 없는 시각은 **설정 시간대의 로컬 시각**으로 해석(`time::parse_iso_in`). v1 은 시스템 로컬로 해석했고 결과는 같다. Claude/Codex 타임스탬프는 항상 `Z` 라 무관.
