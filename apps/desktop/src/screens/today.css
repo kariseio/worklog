@@ -1,0 +1,452 @@
+/* 오늘 화면 — 피드형(A). 공용 토큰·클래스는 styles.css, 여기서는 .today-* 만 정의한다. */
+
+/* ---- 헤더 ---------------------------------------------------------------- */
+
+.today-header-date {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 좁은 창(780px)에서 제목·날짜·기본 버튼은 그대로 두고 일정 필만 줄어들며 말줄임한다. */
+.today-sched {
+  border: none;
+  background: transparent;
+  padding: 0;
+  display: inline-flex;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  border-radius: 999px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.today-sched .pill {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.today-sched-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.today-sched:hover .pill {
+  border-color: var(--line-strong);
+}
+
+.today-sched:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.today-done {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 20px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ok) 10%, var(--bg));
+  color: var(--ok);
+}
+
+.today-link {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* ---- 지표 스트립 ----------------------------------------------------------- */
+
+.today-kpis {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  min-height: 54px;
+  padding: 8px 20px;
+  border-bottom: 1px dashed var(--faint);
+}
+
+/* 지표 스트립은 줄바꿈(flex-wrap)된다. 상태 글은 줄어들며 말줄임, '지금 갱신' 버튼은 항상 보인다. */
+.today-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  white-space: nowrap;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.today-live-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 생성 카드 ------------------------------------------------------------- */
+
+.today-genwrap {
+  flex: none;
+  padding: 12px 20px 0;
+}
+
+.today-gen {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.today-gen-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.today-gen-title {
+  font-size: 16px;
+}
+
+.today-gen-steps {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.today-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12.5px;
+  background: var(--surface);
+  white-space: nowrap;
+}
+
+.today-step.is-done {
+  background: var(--bg2);
+  color: var(--muted);
+}
+
+.today-step.is-now {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+
+.today-step.is-todo {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.today-gen.is-cancel .today-step {
+  opacity: 0.5;
+}
+
+.today-gen-link {
+  flex: 1 1 12px;
+  min-width: 12px;
+  max-width: 48px;
+  border-top: 1px solid var(--line);
+}
+
+.today-prog {
+  height: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.today-prog-fill {
+  height: 100%;
+  background: var(--ink);
+  transition: width 0.3s ease;
+}
+
+.today-gen.is-cancel .today-prog-fill {
+  background: var(--faint);
+}
+
+/* ---- 필터 · 경고 ------------------------------------------------------------ */
+
+.today-feedbar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 20px 0;
+}
+
+.today-feedbar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.today-warn-btn {
+  border: none;
+  background: transparent;
+  padding: 0 4px;
+  color: var(--warn);
+  font-size: 12.5px;
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.today-warn-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.today-warn-list {
+  margin: 0;
+  padding: 2px 0 0 18px;
+  color: var(--muted);
+  font-size: 12.5px;
+  user-select: text;
+}
+
+/* ---- 피드 ------------------------------------------------------------------ */
+
+.today-body {
+  padding: 10px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.today-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: opacity 0.2s;
+}
+
+.today-feed.is-dim {
+  opacity: 0.55;
+}
+
+.today-loading {
+  display: flex;
+  justify-content: center;
+  padding: 40px;
+  color: var(--muted);
+}
+
+.today-sep {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 4px;
+}
+
+.today-sep-line {
+  flex: 1;
+  border-top: 1px dashed var(--faint);
+}
+
+.today-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.today-row-memo {
+  justify-content: flex-end;
+}
+
+.today-tm {
+  width: 48px;
+  flex: none;
+  font-size: 12.5px;
+  color: var(--muted);
+  padding-top: 6px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.today-tm-r {
+  text-align: left;
+}
+
+.today-ev {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  max-width: min(600px, 100%);
+  min-width: 0;
+}
+
+.today-ev > .ic {
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.today-ev.is-active {
+  background: var(--active);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+}
+
+.today-ev-body {
+  min-width: 0;
+  user-select: text;
+}
+
+.today-ev-title {
+  overflow-wrap: anywhere;
+}
+
+.today-ev-detail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.today-ev-live {
+  width: 7px;
+  height: 7px;
+}
+
+.today-memo {
+  background: var(--memo);
+  border: 1px solid var(--memo-line);
+  border-radius: 12px 12px 2px 12px;
+  padding: 8px 12px;
+  max-width: min(540px, 78%);
+  min-width: 0;
+  color: var(--memo-ink);
+  box-shadow: var(--shadow);
+}
+
+.today-memo.is-editing {
+  width: 540px;
+  max-width: 100%;
+}
+
+.today-memo-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.today-memo-foot {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.today-memo .chip-memo {
+  background: color-mix(in srgb, var(--surface) 55%, var(--memo));
+}
+
+.today-memo .btn-ghost {
+  color: color-mix(in srgb, var(--memo-ink) 70%, transparent);
+}
+
+.today-memo .btn-ghost:hover:not(:disabled) {
+  color: var(--memo-ink);
+  background: color-mix(in srgb, var(--surface) 40%, transparent);
+}
+
+.today-memo-edit {
+  width: 100%;
+  resize: none;
+  overflow-y: auto;
+  min-height: 36px;
+  max-height: 120px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.today-memo-hint {
+  font-size: 12px;
+  color: color-mix(in srgb, var(--memo-ink) 65%, transparent);
+  margin-right: auto;
+}
+
+/* ---- 입력(컴포저) ------------------------------------------------------------ */
+
+.today-composer {
+  flex: none;
+  border-top: 1px solid var(--line);
+  padding: 10px 20px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg2);
+}
+
+.today-composer-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.today-composer-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.today-input {
+  flex: 1;
+  min-height: 36px;
+  max-height: 96px;
+  resize: none;
+  overflow-y: auto;
+}
+
+.today-send {
+  width: 44px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+  flex: none;
+}
+
+.today-composer-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+  flex-wrap: wrap;
+}
+
+.today-ydot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--memo);
+  border: 1px solid var(--memo-line);
+  display: inline-block;
+  flex: none;
+}

@@ -1,0 +1,546 @@
+/* 일지 화면 — 왼쪽 달력·목록 + 오른쪽 문서. 공용 토큰·클래스는 styles.css */
+
+.journal-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ---- 왼쪽 ---------------------------------------------------------------- */
+
+.journal-aside {
+  width: 270px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 12px 0;
+  min-height: 0;
+  background: var(--bg2);
+  border-right: 1px solid var(--line);
+}
+
+.journal-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+.journal-search-ic {
+  position: absolute;
+  left: 9px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+/* 공용 클래스(.input .pill .textarea .screen-header …)와 겹치는 규칙은 같은 특이성으로 둔다 —
+   index.tsx 가 styles.css 를 먼저 넣으므로 화면 CSS 가 뒤에 와서 이긴다. */
+.journal-search-input {
+  width: 100%;
+  padding-left: 30px;
+  padding-right: 28px;
+  font-size: 13px;
+}
+
+.journal-search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.journal-search-clear {
+  position: absolute;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.journal-search-clear:hover {
+  color: var(--ink);
+  background: var(--bg2);
+}
+
+/* 달력 */
+
+.journal-cal-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.journal-cal-title {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  font-weight: 700;
+  font-size: 15px;
+  text-align: center;
+  color: var(--ink);
+  border-radius: var(--radius-sm);
+}
+
+.journal-cal-title:hover {
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+
+.journal-cal {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+  flex: none;
+}
+
+.journal-cal-wd {
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: center;
+  margin-bottom: -4px;
+}
+
+.journal-day {
+  height: 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1;
+}
+
+.journal-day:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+
+.journal-day:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.journal-day.is-out,
+.journal-day.is-weekend,
+.journal-day:disabled {
+  color: var(--faint);
+}
+
+.journal-day:disabled {
+  cursor: default;
+}
+
+.journal-day.is-today {
+  border-style: dashed;
+  border-color: var(--faint);
+}
+
+.journal-day.is-selected {
+  border-style: solid;
+  border-color: var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.journal-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  flex: none;
+  display: inline-block;
+}
+
+.journal-dot-generated {
+  background: var(--line-strong);
+}
+
+.journal-dot-edited {
+  background: linear-gradient(90deg, var(--line-strong) 50%, var(--surface) 50%);
+}
+
+.journal-dot-none {
+  border-style: dashed;
+  border-color: var(--faint);
+}
+
+.journal-dot-blank {
+  visibility: hidden;
+}
+
+.journal-legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--line);
+}
+
+.journal-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 읽기 실패 뒤 다시 시도(달력 범례 · 검색 머리글의 작은 링크형 버튼) */
+.journal-retry {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+.journal-retry:hover {
+  color: var(--ink);
+}
+
+/* 목록 */
+
+.journal-results-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--line);
+}
+
+.journal-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 -4px;
+  padding: 0 4px 10px;
+}
+
+.journal-list-empty {
+  padding: 12px 6px;
+  text-align: center;
+}
+
+.journal-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.journal-entry:hover {
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+
+.journal-entry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.journal-entry.is-today.is-none {
+  border-style: dashed;
+  border-color: var(--faint);
+}
+
+.journal-entry.is-selected {
+  background: var(--surface);
+  border-style: solid;
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+/* 날짜 · 상태 · (오늘) · 만들기. 좁은 사이드바에서 상태 글자가 낱말마다 줄바꿈되지 않게 —
+   항목은 통째로 다음 줄로 내려가고(flex-wrap), 버튼은 오른쪽 끝에 붙는다. */
+.journal-entry-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  min-width: 0;
+  min-height: 21px;
+}
+
+.journal-entry-date {
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.journal-entry-status {
+  white-space: nowrap;
+  line-height: 21px;
+}
+
+.journal-entry-gen {
+  margin-left: auto;
+  flex: none;
+  min-width: max-content;
+}
+
+.journal-entry-kpis {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.journal-entry-today {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--memo-ink);
+  background: var(--memo);
+  border: 1px solid var(--memo-line);
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.journal-entry-snip {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 오른쪽 ---------------------------------------------------------------- */
+
+.journal-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.journal-head {
+  gap: 10px;
+}
+
+.journal-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: none;
+}
+
+.journal-pill {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+  line-height: 20px;
+}
+
+.journal-btn-on {
+  border-color: var(--line-strong);
+  background: var(--bg2);
+}
+
+/* 저장하지 않은 임시 편집본이 남아 있는 날짜 */
+.journal-btn-draft {
+  border-color: color-mix(in srgb, var(--warn) 60%, var(--line));
+  color: var(--warn);
+}
+
+.journal-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 6px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.journal-progress-text {
+  white-space: nowrap;
+}
+
+.journal-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.journal-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+  transition: width 0.3s ease;
+}
+
+.journal-body {
+  padding: 16px 20px;
+}
+
+.journal-body.is-editing {
+  padding: 12px 20px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.journal-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 20px 0;
+}
+
+/* 문서 읽기 실패 */
+.journal-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 16px 0;
+  color: var(--err);
+  font-size: 13px;
+}
+
+.journal-error-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.journal-doc {
+  max-width: 820px;
+}
+
+.journal-doc .chip {
+  font-size: 11.5px;
+  line-height: 19px;
+  vertical-align: 1px;
+  cursor: default;
+}
+
+.journal-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.journal-textarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+
+.journal-editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  min-width: 0;
+}
+
+.journal-editor-foot .small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.journal-empty-btn {
+  margin-top: 8px;
+}
+
+.journal-empty-gen {
+  margin-top: 8px;
+}
+
+/* 푸터: 저장 대상 상태 */
+
+.journal-foot {
+  height: 46px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 20px;
+  background: var(--bg2);
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.journal-sink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.journal-sink-idle,
+.journal-sink-off {
+  color: var(--muted);
+}
+
+.journal-sink-failed {
+  color: var(--err);
+}
+
+/* ---- 좁은 창(780px) ---------------------------------------------------------- */
+
+@media (max-width: 899px) {
+  .journal-aside {
+    width: 240px;
+  }
+
+  .journal-head {
+    gap: 6px;
+    padding: 0 14px;
+  }
+
+  .journal-title {
+    font-size: 19px;
+  }
+
+  .journal-btn-label {
+    display: none;
+  }
+
+  .journal-body {
+    padding-inline: 14px;
+  }
+
+  .journal-foot {
+    gap: 10px;
+    padding: 0 14px;
+  }
+
+  .journal-editor-foot .small {
+    display: none;
+  }
+}

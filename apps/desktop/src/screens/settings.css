@@ -1,0 +1,377 @@
+/* 설정 화면 — 왼쪽 하위 탭(200px) + 오른쪽 폼. 토큰·공용 클래스는 styles.css */
+
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ---- 왼쪽 하위 탭 ------------------------------------------------------------- */
+
+.settings-aside {
+  width: 200px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 12px 14px;
+  background: var(--bg2);
+  border-right: 1px solid var(--line);
+}
+
+@media (max-width: 840px) {
+  .settings-aside {
+    width: 168px;
+  }
+}
+
+.settings-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  text-align: left;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.settings-nav:hover {
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+
+.settings-nav.is-active {
+  background: var(--surface);
+  border-color: var(--line);
+  box-shadow: var(--shadow);
+  font-weight: 700;
+}
+
+.settings-nav:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.settings-nav-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--ink);
+  flex: none;
+}
+
+.settings-nav.is-active .settings-nav-dot {
+  background: var(--ink);
+}
+
+.settings-aside-foot {
+  margin-top: auto;
+  padding: 0 12px;
+  line-height: 1.4;
+}
+
+.settings-path {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  word-break: break-all;
+  user-select: text;
+}
+
+/* ---- 오른쪽 폼 -------------------------------------------------------------- */
+
+.settings-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-main .screen-header {
+  flex-wrap: wrap;
+  row-gap: 2px;
+  padding-block: 8px;
+}
+
+.settings-header-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.settings-header-state .row {
+  gap: 5px;
+  white-space: nowrap;
+}
+
+@media (max-width: 840px) {
+  .settings-header-sub {
+    display: none;
+  }
+}
+
+.settings-content {
+  padding: 4px 22px 28px;
+}
+
+.settings-loading {
+  padding: 24px 0;
+}
+
+/* ---- 섹션 · 행 ------------------------------------------------------------- */
+
+.settings-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 0;
+  border-bottom: 1px dashed var(--line);
+  max-width: 860px;
+}
+
+.settings-sec:last-child {
+  border-bottom: none;
+}
+
+.settings-sec.is-off > :not(.settings-sec-head) {
+  opacity: 0.6;
+}
+
+.settings-sec-head {
+  min-height: 30px;
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.settings-sec-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.settings-note {
+  line-height: 1.4;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Field 의 라벨 글자는 입력과 연결되지 않는다 — 셀렉트는 이 라벨로 감싸 이름만 준다(보이지 않음). */
+.settings-labelwrap {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+}
+
+.settings-time {
+  width: 120px;
+}
+
+.settings-num {
+  width: 90px;
+}
+
+.settings-short {
+  width: 160px;
+}
+
+.settings-shortcut {
+  width: 240px;
+  max-width: 100%;
+}
+
+.settings-secret {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.settings-secret-area {
+  width: 100%;
+  max-width: 560px;
+  -webkit-text-security: disc;
+}
+
+.settings-secret-area:focus {
+  -webkit-text-security: none;
+}
+
+.field-body > .settings-pathrow {
+  flex-wrap: nowrap;
+}
+
+.settings-status {
+  min-height: 26px;
+}
+
+.settings-check {
+  gap: 10px;
+}
+
+/* ---- 목록 편집 · 태그 ----------------------------------------------------------- */
+
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.field-body > .settings-list-row {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+
+.settings-list-row {
+  gap: 6px;
+}
+
+.settings-x {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 4px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.settings-x:hover {
+  color: var(--err);
+  background: var(--bg2);
+}
+
+.settings-tags {
+  gap: 6px;
+}
+
+.settings-tag-chip {
+  gap: 2px;
+}
+
+.settings-chip-x {
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0 0 0 2px;
+  display: grid;
+  place-items: center;
+  opacity: 0.7;
+}
+
+.settings-chip-x:hover {
+  opacity: 1;
+  color: var(--err);
+}
+
+.settings-tag-input {
+  width: 220px;
+  max-width: 100%;
+}
+
+.settings-cals {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-checkrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.settings-checkrow input {
+  accent-color: var(--ink);
+}
+
+/* ---- 최근 생성 표 ------------------------------------------------------------ */
+
+.settings-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.settings-table th,
+.settings-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.settings-table th {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12.5px;
+}
+
+.settings-table tr:last-child td {
+  border-bottom: none;
+}
+
+.settings-td-nowrap {
+  white-space: nowrap;
+}
+
+.settings-td-action {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.settings-result {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  user-select: text;
+}
+
+/* ---- 정보 ---------------------------------------------------------------- */
+
+.settings-kv {
+  user-select: text;
+  word-break: break-all;
+}
+
+.settings-update-box {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 560px;
+}
+
+.settings-update-notes {
+  white-space: pre-wrap;
+  user-select: text;
+  max-height: 160px;
+  overflow: auto;
+  line-height: 1.5;
+}

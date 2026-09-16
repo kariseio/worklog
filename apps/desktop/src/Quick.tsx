@@ -1,17 +1,23 @@
-import { createSignal, onCleanup, onMount } from "solid-js";
+import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { Chip, Icon } from "./components/ui";
 import { api, on } from "./ipc";
+import { errText } from "./store";
+import { fmtTime } from "./util";
 
-// 빠른 메모 팝업(전역 단축키 · 트레이 메뉴). Enter 저장, Esc 닫기, 포커스 잃으면 닫힘(Rust).
+const TAGS = ["#요청", "#결정", "#할일", "#회의"];
+
+// 빠른 메모 팝업(전역 단축키 · 트레이 메뉴). Enter 저장 → 닫힘, Esc 닫기, 포커스 잃으면 닫힘(Rust).
+// 방금 저장한 메모 한 줄을 남겨 '들어갔다'는 확신을 준다.
 export default function Quick() {
   let input!: HTMLInputElement;
   const [text, setText] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
-  const [saved, setSaved] = createSignal<string | null>(null);
+  const [last, setLast] = createSignal<{ text: string; time: string } | null>(null);
+  const [saving, setSaving] = createSignal(false);
 
   const focus = () => {
     setError(null);
-    setSaved(null);
     queueMicrotask(() => {
       input.focus();
       input.select();
@@ -35,15 +41,24 @@ export default function Quick() {
 
   const submit = async () => {
     const t = text().trim();
-    if (!t) return;
+    if (!t || saving()) return;
+    setSaving(true);
     try {
       const n = await api.noteAdd(t, "quick");
       setText("");
-      setSaved(`저장됨 · ${n.ts.slice(11, 16)}`);
+      setLast({ text: n.text, time: fmtTime(n.ts) });
       await api.quickHide();
     } catch (e) {
-      setError(String(e));
+      setError(errText(e));
+    } finally {
+      setSaving(false);
     }
+  };
+
+  const addTag = (tag: string) => {
+    const cur = text();
+    setText(cur.includes(tag) ? cur : `${cur.trimEnd()} ${tag} `.trimStart());
+    input.focus();
   };
 
   const onKey = (e: KeyboardEvent) => {
@@ -59,20 +74,46 @@ export default function Quick() {
   return (
     <main class="quick">
       <div class="quick-bar">
+        <Icon name="note" size={15} />
         <span>빠른 메모</span>
-        <span class="muted">#태그 @이름 · Enter 저장 · Esc 닫기</span>
+        <span class="muted">Enter 저장 · Esc 닫기</span>
+        <span class="grow" />
+        <div class="quick-chips">
+          {TAGS.map((t) => (
+            <Chip onClick={() => addTag(t)} memo>
+              {t}
+            </Chip>
+          ))}
+        </div>
       </div>
       <input
         ref={input}
         class="quick-input"
-        placeholder="예) #요청 @김팀장 결제 API 타임아웃 늘려달라"
+        placeholder="구두 요청 · 결정 · 할 일 — #태그 @이름"
         value={text()}
         onInput={(e) => setText(e.currentTarget.value)}
         onKeyDown={onKey}
         autofocus
       />
       <div class="quick-foot">
-        {error() ? <span class="err">{error()}</span> : <span class="muted">{saved() ?? ""}</span>}
+        <Show when={error()}>
+          <Icon name="alert" size={14} />
+          <span>{error()}</span>
+        </Show>
+        <Show when={!error() && last()}>
+          {(l) => (
+            <>
+              <Icon name="check" size={14} />
+              <span class="muted">{l().time} 저장됨 · </span>
+              <span class="grow" style={{ overflow: "hidden", "text-overflow": "ellipsis", "white-space": "nowrap" }}>
+                {l().text}
+              </span>
+            </>
+          )}
+        </Show>
+        <Show when={!error() && !last()}>
+          <span class="muted">오늘 피드에 바로 들어갑니다 · 트레이 메뉴 또는 단축키로 어디서든</span>
+        </Show>
       </div>
     </main>
   );

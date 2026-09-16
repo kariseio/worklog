@@ -88,6 +88,7 @@ pub fn run() {
             commands::test_connection,
             commands::naverworks_calendars,
             commands::open_path,
+            commands::open_url,
             commands::pick_path,
             commands::drives,
             commands::update_check,

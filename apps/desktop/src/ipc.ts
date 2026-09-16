@@ -1,6 +1,10 @@
 // Rust 커맨드·이벤트의 타입과 얇은 래퍼. Rust 쪽 serde 구조와 1:1 로 맞춘다.
+// Tauri 밖(브라우저 미리보기)에서는 `mock.ts` 의 가짜 백엔드로 바꿔 끼운다.
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { mockApi, mockOn } from "./mock";
+
+export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 // ---- 피드 ------------------------------------------------------------------ //
 
@@ -292,7 +296,7 @@ export interface AppInfo {
 
 // ---- 커맨드 ----------------------------------------------------------------- //
 
-export const api = {
+const tauriApi = {
   appInfo: () => invoke<AppInfo>("app_info"),
   appQuit: () => invoke<void>("app_quit"),
 
@@ -328,6 +332,7 @@ export const api = {
     invoke<CalendarInfo[]>("naverworks_calendars", { config }),
 
   openPath: (path: string) => invoke<void>("open_path", { path }),
+  openUrl: (url: string) => invoke<void>("open_url", { url }),
   pickPath: (kind: "folder" | "file", start?: string) =>
     invoke<string | null>("pick_path", { kind, start }),
   drives: () => invoke<DriveInfo[]>("drives"),
@@ -353,9 +358,13 @@ export interface Events {
   "quick:show": null;
 }
 
+export type Api = typeof tauriApi;
+export const api: Api = isTauri ? tauriApi : (mockApi as unknown as Api);
+
 export function on<K extends keyof Events>(
   name: K,
   handler: (payload: Events[K]) => void,
 ): Promise<UnlistenFn> {
+  if (!isTauri) return mockOn(name, handler);
   return listen<Events[K]>(name, (e) => handler(e.payload));
 }

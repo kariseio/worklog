@@ -444,6 +444,18 @@ pub async fn open_path(app: AppHandle, path: String) -> Res<()> {
         .map_err(|e| e.to_string())
 }
 
+/// http(s) 링크를 기본 브라우저로 연다(문서 안 링크 클릭용). 다른 스킴은 거절.
+#[tauri::command]
+pub async fn open_url(app: AppHandle, url: String) -> Res<()> {
+    let u = url.trim();
+    if !(u.starts_with("https://") || u.starts_with("http://")) {
+        return Err("http(s) 링크만 열 수 있습니다.".into());
+    }
+    app.opener()
+        .open_url(u, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// 폴더/파일 선택 대화상자. `kind`: folder | file. 취소하면 None.
 #[tauri::command]
 pub async fn pick_path(app: AppHandle, kind: String, start: Option<String>) -> Res<Option<String>> {
