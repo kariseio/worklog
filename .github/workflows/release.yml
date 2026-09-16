@@ -1,0 +1,61 @@
+# 태그(v*)를 밀면 Windows 설치기(NSIS)와 업데이터 산출물(latest.json · .sig)을 GitHub Release 에 올린다.
+#
+# 필요한 저장소 secrets:
+#   TAURI_SIGNING_PRIVATE_KEY           — `pnpm tauri signer generate` 로 만든 개인키 파일 내용
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — 그 키의 비밀번호(없으면 빈 문자열)
+# 공개키는 apps/desktop/src-tauri/tauri.conf.json 의 plugins.updater.pubkey 에 들어 있다.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      - name: Frontend deps
+        run: pnpm install --frozen-lockfile
+        working-directory: apps/desktop
+
+      - name: Core tests
+        run: cargo test --workspace --exclude worklog-app
+
+      - name: Build · bundle · release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "업무일지 ${{ github.ref_name }}"
+          releaseBody: "설치: `업무일지_*_x64-setup.exe` · 기존 설치본은 앱 안에서 자동 업데이트됩니다."
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true

@@ -129,6 +129,19 @@ kv         (key PK, value)                                    -- 마지막 전�
 | 3 파이프라인·CLI | 완료 (2026-09-14, `d1a7de1`) | analyze·render·summarize·output·service·CLI. 골든 비교: 9/10·9/11·9/12 `--dry-run --no-llm` 출력이 Python 과 동일(끝의 빈 줄 1개 제외). 같은 날짜 소요: Python 13~24초 → Rust 1.1~3.5초. 코어 테스트 100개 |
 | 4 메모·감시·스케줄 | 완료 (2026-09-14) | notes(메모 → 파이프라인·CLI `note`/`notes`), feed(피드·델타), watch(notify 감시·디바운스), live(소스별 증분 갱신 엔진), schedule(발동 시각 계산). 코어 테스트 112개 |
 | 5 Tauri 셸 | 완료 (2026-09-14) | 상태·엔진 스레드·생성 작업·IPC 30개·플러그인 7종(단일 인스턴스·알림·자동 시작·전역 단축키·업데이터·대화상자·열기). 4관점 적대적 리뷰 22건 반영. 스모크: 시작 수집 3.0s(항목 26·저장소 92), 세션 로그 변경 → 피드 반영 50~100ms, 두 번째 실행 0.3~1.1s 만에 기존 창으로, 창 닫기 후 프로세스 상주(private 21MB · working set 114MB, gix mmap 포함), 재실행 시 창 재생성 확인. 알림 클릭→창 열림은 설치기(시작 메뉴 바로가기 AUMID) 뒤 7단계에서 확인 |
+| 6 UI | 완료 (2026-09-17) | SolidJS 세 화면(오늘·일지·설정) + 빠른 메모 창, 와이어프레임 A 기준. 공용 토큰/컴포넌트(`styles.css`, `components/ui.tsx`), 전역 상태(`store.ts`), 브라우저 미리보기용 가짜 백엔드(`mock.ts`, Tauri 밖에서 자동 사용). 화면별 병렬 구현(opus) → 3관점 리뷰 24건 → 수정 → 검증. 미리보기에서 메모 추가/편집, 생성 진행·완료 후 일지 자동 이동, 일지 편집·저장, 설정 즉시 저장, 다크 모드 확인 |
+| 7 배포 | 진행 중 | 서명키 생성(`~/.tauri/worklog.key`, 비밀번호 없음 · 공개키는 `tauri.conf.json` `plugins.updater.pubkey`), `createUpdaterArtifacts: true`, `.github/workflows/release.yml`(태그 `v*` → tauri-action → NSIS + `latest.json` + `.sig`). 남은 것: GitHub secrets(`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`=빈 값) 등록 → 태그 푸시 → 이전 버전에서 업데이트 확인 |
+
+### UI 결정 사항(6단계에서 확정)
+- **미리보기 백엔드**: `ipc.ts` 는 `window.__TAURI_INTERNALS__` 가 없으면 `mock.ts`(가짜 데이터·타이머 생성)를 쓴다. `pnpm dev`(포트 1420) 로 브라우저에서 화면을 확인·리뷰할 수 있다. 실제 백엔드처럼 매번 새 객체를 돌려줘야 한다(같은 객체를 돌려주면 Solid resource 가 갱신을 못 알아챈다).
+- **상태**: `store.ts` 하나. 리스너를 먼저 걸고 스냅샷을 받는다(사이에 온 이벤트 유실 방지). `generate:progress` 가 모르는 run 이면 `generate_status` 로 실제 날짜를 받아 온다.
+- **설정 저장**: 토글·칩·셀렉트·선택 버튼은 즉시 저장, 텍스트·숫자·비밀 칸은 blur/Enter 에 저장(설정 저장마다 엔진이 감시 재시작·전체 수집을 하므로 키 입력마다 저장하지 않는다). 마지막으로 보낸 설정과 같으면 저장 생략. 시간대는 IANA 이름 검증 후 저장.
+- **비밀 값**: 서버는 절대 돌려주지 않는다. 화면은 '설정됨 · 바꾸려면 입력' 자리표시만 보이고, 빈 값 = 기존 유지(`merge_blank_from`).
+- **편집된 일지**: 생성 요청이 "편집된 일지가 있습니다" 로 거절되면 화면이 확인(`confirm`) 후 `overwrite_edited: true` 로 다시 부른다(`store.startGenerate`). 편집 중 화면을 옮기면 초안을 날짜별로 보관했다가 돌아오면 이어서 편집.
+- **생성 완료 후 이동**: 오늘 화면에서 사용자가 직접 시작한 생성이 끝나고 입력 중인 메모가 없으면 '일지'로 자동 이동. 정해진 시각 자동 생성·다른 창에서 시작한 실행은 토스트('일지 보기')만.
+- **한글 입력**: 모든 Enter/Esc 처리기는 조합 중(`isComposing` 또는 `keyCode 229`)이면 무시한다.
+- **문서 링크**: 렌더된 마크다운의 http(s) 링크는 `open_url` 로 기본 브라우저에서 열고, 그 외는 무시(웹뷰가 앱 밖으로 이동하지 않게).
+- **CSS 순서**: `index.tsx` 가 `styles.css` 를 App 보다 먼저 import 해 화면별 css 가 공용 규칙을 덮는다.
 
 ### 셸 결정 사항(5단계에서 확정)
 - **스레드 모델**: 엔진 스레드 하나가 `Live` 와 파일 감시 핸들을 독점한다. 커맨드는 `AppState` 의 피드 스냅샷만 읽고, 메모·설정 변경은 mpsc 로 엔진에 알린다. 엔진은 SQLite 연결을 따로 연다(WAL). 생성 작업은 별도 스레드, 동시 1개, `catch_unwind` 로 감싼다 — 그래서 릴리스 프로필의 `panic = "abort"` 를 뺐다(abort 면 모든 패닉 폴백이 죽는다).
