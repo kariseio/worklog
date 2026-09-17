@@ -49,6 +49,16 @@ pub fn user_prompt(date_iso: &str, signal: &str, availability: &str) -> String {
     )
 }
 
+/// `summarizer.model` 이 비어 있을 때 Anthropic API 로 보낼 기본 모델.
+/// (claude CLI 쪽은 `--model` 자체를 생략해 CLI 기본 모델에 맡긴다.)
+pub const DEFAULT_API_MODEL: &str = "claude-opus-5";
+
+/// 설정의 모델 이름. 비어 있거나 공백뿐이면 `None` = 제공자 기본값을 쓴다.
+fn configured_model(cfg: &SummarizerConfig) -> Option<&str> {
+    let m = cfg.model.trim();
+    (!m.is_empty()).then_some(m)
+}
+
 /// claude CLI 한 번 호출 상한.
 const CLI_TIMEOUT: Duration = Duration::from_secs(240);
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -222,7 +232,11 @@ fn call_claude_cli(
     // 이 요약 호출이 만드는 Claude 세션을 나중에 확실히 걸러내기 위한 표식(맨 앞).
     let full = format!("{WORKLOG_SENTINEL}\n{system}\n\n{user}");
     let mut cmd = Command::new(exe);
-    cmd.args(["-p", "--model", &cfg.model]);
+    cmd.arg("-p");
+    // 모델을 비워 뒀으면 `--model` 을 붙이지 않는다 — claude CLI 의 기본 모델을 그대로 쓴다.
+    if let Some(model) = configured_model(cfg) {
+        cmd.args(["--model", model]);
+    }
     match run_with_timeout(cmd, &full, CLI_TIMEOUT, cancel) {
         Ok((0, out, _)) => {
             let out = out.trim();
@@ -255,7 +269,8 @@ fn call_anthropic_api(system: &str, user: &str, cfg: &SummarizerConfig) -> Optio
         .build()
         .ok()?;
     let body = serde_json::json!({
-        "model": cfg.model,
+        // 모델을 비워 뒀으면 API 에는 빈 값을 보낼 수 없으므로 기본 모델을 쓴다.
+        "model": configured_model(cfg).unwrap_or(DEFAULT_API_MODEL),
         "max_tokens": cfg.max_tokens,
         "system": system,
         "messages": [{"role": "user", "content": user}],
@@ -608,6 +623,33 @@ mod tests {
             map_workers: workers,
             ..Default::default()
         }
+    }
+
+    /// N7 — 빈 모델은 '제공자 기본값'. CLI 는 `--model` 생략, API 는 기본 모델 상수.
+    #[test]
+    fn empty_model_means_provider_default() {
+        let c = SummarizerConfig::default();
+        assert_eq!(c.model, ""); // 새 설정의 기본값
+        assert_eq!(configured_model(&c), None);
+        assert_eq!(
+            configured_model(&c).unwrap_or(DEFAULT_API_MODEL),
+            DEFAULT_API_MODEL
+        );
+        assert!(!DEFAULT_API_MODEL.is_empty());
+
+        // 공백만 적힌 값도 비운 것으로 본다.
+        let c = SummarizerConfig {
+            model: "  \t".into(),
+            ..Default::default()
+        };
+        assert_eq!(configured_model(&c), None);
+
+        // 값이 있으면 앞뒤 공백만 떼고 그대로 쓴다(임의 치환 없음).
+        let c = SummarizerConfig {
+            model: " claude-sonnet-5 ".into(),
+            ..Default::default()
+        };
+        assert_eq!(configured_model(&c), Some("claude-sonnet-5"));
     }
 
     #[test]

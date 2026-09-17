@@ -234,6 +234,10 @@ pub struct SourcesConfig {
 pub struct SummarizerConfig {
     /// auto | claude_cli | anthropic_api | none
     pub provider: String,
+    /// 요약에 쓸 모델 이름. **빈 문자열이 기본값** = 제공자 기본 모델에 맡긴다
+    /// (claude CLI 는 `--model` 을 붙이지 않고, Anthropic API 는
+    /// [`crate::summarize::DEFAULT_API_MODEL`] 을 쓴다).
+    /// 이미 값이 있는 설정 파일은 [`Config::normalize`] 가 건드리지 않는다(마이그레이션 없음).
     pub model: String,
     pub language: String,
     pub max_tokens: u32,
@@ -250,7 +254,8 @@ impl Default for SummarizerConfig {
     fn default() -> Self {
         Self {
             provider: "auto".into(),
-            model: "claude-opus-4-8".into(),
+            // 빈 값 = 제공자 기본 모델. 특정 모델을 강제하지 않는다(UI placeholder "기본 모델").
+            model: String::new(),
             language: "ko".into(),
             max_tokens: 4000,
             map_reduce_chars: 20_000,
@@ -644,6 +649,8 @@ impl Config {
         if self.timezone.trim().is_empty() {
             self.timezone = "Asia/Seoul".into();
         }
+        // `summarizer.model` 은 일부러 손대지 않는다 — 빈 값은 '제공자 기본 모델' 이라는 뜻이고,
+        // 기존 파일에 적힌 모델 이름은 마이그레이션 없이 그대로 존중한다.
         // 일지 템플릿도 정해진 값만 — 모르는 값·빈 칸은 standard 로.
         self.summarizer.template = crate::template::resolve(&self.summarizer.template).to_string();
         // 겉모양은 정해진 값만 — 모르는 값·빈 칸은 기본값으로.
@@ -986,6 +993,50 @@ mod tests {
         assert_eq!(Config::load_from(&p).summarizer.template, "report");
         // 비밀이 아니므로 UI 로 나가는 사본에도 남는다.
         assert_eq!(c.redacted().summarizer.template, "report");
+    }
+
+    /// N7 — 새 설정의 모델은 비어 있고(제공자 기본값), 기존 파일의 모델 값은 그대로 유지된다.
+    #[test]
+    fn summarizer_model_defaults_to_empty() {
+        assert_eq!(SummarizerConfig::default().model, "");
+        assert_eq!(Config::default().summarizer.model, "");
+        // normalize 가 빈 값을 어떤 모델로도 채우지 않는다(UI 는 placeholder '기본 모델' 로 보여 준다).
+        let mut c = Config::default();
+        c.normalize();
+        assert_eq!(c.summarizer.model, "");
+        // 키가 통째로 없는 파일도 빈 값.
+        let c: Config = serde_json::from_str(r#"{"summarizer":{"provider":"auto"}}"#).unwrap();
+        assert_eq!(c.summarizer.model, "");
+        // 저장하면 빈 문자열로 남는다(키를 지우지 않는다).
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        Config::default().save_to(&p).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(raw["summarizer"]["model"], "");
+    }
+
+    #[test]
+    fn summarizer_model_keeps_existing_value() {
+        // 옛 파일에 적힌 모델은 마이그레이션 없이 그대로.
+        let mut c: Config = serde_json::from_str(V1_SAMPLE).unwrap();
+        assert_eq!(c.summarizer.model, "claude-opus-4-8");
+        c.normalize();
+        assert_eq!(c.summarizer.model, "claude-opus-4-8");
+
+        // 파일에서 읽고 다시 저장해도 값이 살아남는다.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        fs::write(&p, r#"{"summarizer":{"model":"claude-sonnet-5"}}"#).unwrap();
+        let c = Config::load_from(&p);
+        assert_eq!(c.summarizer.model, "claude-sonnet-5");
+        c.save_to(&p).unwrap();
+        assert_eq!(Config::load_from(&p).summarizer.model, "claude-sonnet-5");
+        // 비밀이 아니므로 UI 로 나가는 사본에도 남는다.
+        assert_eq!(c.redacted().summarizer.model, "claude-sonnet-5");
+        // 사용자가 비우면 비운 대로 — '기본 모델' 로 되돌아간다.
+        fs::write(&p, r#"{"summarizer":{"model":"  "}}"#).unwrap();
+        assert_eq!(Config::load_from(&p).summarizer.model, "  ");
     }
 
     #[test]
