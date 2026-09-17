@@ -28,7 +28,7 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-pub const SCHEMA_VERSION: i32 = 2;
+pub const SCHEMA_VERSION: i32 = 3;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS notes (
@@ -100,6 +100,11 @@ CREATE TABLE IF NOT EXISTS day_feeds (
 );
 "#;
 
+/// v3: 어느 템플릿(standard | report | retro)으로 만든 일지인지. 옛 문서는 NULL(=표준으로 본다).
+const SCHEMA_V3: &str = r#"
+ALTER TABLE documents ADD COLUMN template TEXT;
+"#;
+
 // --------------------------------------------------------------------------- //
 // 행 타입
 // --------------------------------------------------------------------------- //
@@ -166,6 +171,9 @@ pub struct Document {
     /// 사용자가 편집한 시각. `document_put` 은 무시하고 항상 지운다(새로 생성했으므로).
     pub edited_at: Option<DateTime<Utc>>,
     pub run_id: Option<i64>,
+    /// 만들 때 쓴 템플릿 id([`crate::template::TEMPLATE_IDS`]). v3 이전 문서는 None.
+    #[serde(default)]
+    pub template: Option<String>,
 }
 
 impl Document {
@@ -291,11 +299,28 @@ impl Store {
         if version < 2 {
             self.conn.execute_batch(SCHEMA_V2)?;
         }
+        // ADD COLUMN 은 두 번 돌면 실패한다 — 버전 기록만 믿지 않고 열 존재도 확인.
+        if version < 3 && !self.has_column("documents", "template")? {
+            self.conn.execute_batch(SCHEMA_V3)?;
+        }
         if version < SCHEMA_VERSION {
             self.conn
                 .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         }
         Ok(())
+    }
+
+    /// 표에 그 열이 있는지. (`PRAGMA table_info` 는 표 이름을 바인딩할 수 없어 형식 문자열로 넣는다 —
+    /// 호출자는 코드 안 상수뿐이다.)
+    fn has_column(&self, table: &str, column: &str) -> Result<bool> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        for r in rows {
+            if r? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn schema_version(&self) -> Result<i32> {
@@ -386,6 +411,26 @@ impl Store {
         Ok(out)
     }
 
+    /// 기간(양끝 포함) 안 날짜별 살아있는 메모 수 — 메모가 있는 날만, 날짜 오름차순.
+    ///
+    /// 저장된 피드 스냅샷 안의 `kpis.notes` 는 스냅샷을 쓴 순간의 값이라 뒤늦은 메모 추가·수정·
+    /// 삭제를 못 따라간다. 지난 날짜 KPI 를 그릴 때 이 값으로 덮어써 최신 상태를 맞춘다.
+    pub fn note_counts(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<(NaiveDate, u32)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT date, COUNT(*) FROM notes
+             WHERE deleted = 0 AND date BETWEEN ?1 AND ?2 GROUP BY date ORDER BY date ASC",
+        )?;
+        let rows = stmt.query_map(params![date_str(from), date_str(to)], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (date, n) = r?;
+            out.push((parse_date(&date)?, n));
+        }
+        Ok(out)
+    }
+
     // ---- runs ----------------------------------------------------------- //
 
     /// 실행 시작 기록 → run id.
@@ -465,18 +510,19 @@ impl Store {
     /// 생성 결과 저장(같은 날짜면 교체). 편집 표식(`edited_at`)은 입력과 무관하게 항상 지운다.
     pub fn document_put(&self, d: &Document) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO documents(date, summary_md, full_md, generated_at, edited_at, run_id)
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5)
+            "INSERT INTO documents(date, summary_md, full_md, generated_at, edited_at, run_id, template)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
              ON CONFLICT(date) DO UPDATE SET
                summary_md = excluded.summary_md, full_md = excluded.full_md,
                generated_at = excluded.generated_at, edited_at = NULL,
-               run_id = excluded.run_id",
+               run_id = excluded.run_id, template = excluded.template",
             params![
                 date_str(d.date),
                 d.summary_md,
                 d.full_md,
                 ts_str(&d.generated_at),
-                d.run_id
+                d.run_id,
+                d.template
             ],
         )?;
         Ok(())
@@ -486,7 +532,7 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT date, summary_md, full_md, generated_at, edited_at, run_id
+                "SELECT date, summary_md, full_md, generated_at, edited_at, run_id, template
                  FROM documents WHERE date = ?1",
                 params![date_str(date)],
                 row_to_document,
@@ -671,6 +717,32 @@ impl Store {
         }
     }
 
+    /// 기간(양끝 포함) 안에 스냅샷이 있는 날들 — `(날짜, 피드 JSON, 마지막으로 쓴 시각)` 을
+    /// 날짜 오름차순으로. 날짜가 "YYYY-MM-DD" 라 문자열 `BETWEEN` 이 곧 날짜 범위다.
+    pub fn day_feed_range(
+        &self,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Result<Vec<(NaiveDate, String, DateTime<Utc>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT date, feed, updated FROM day_feeds
+             WHERE date BETWEEN ?1 AND ?2 ORDER BY date ASC",
+        )?;
+        let rows = stmt.query_map(params![date_str(from), date_str(to)], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (date, feed, updated) = r?;
+            out.push((parse_date(&date)?, feed, parse_ts(&updated)?));
+        }
+        Ok(out)
+    }
+
     /// 스냅샷이 있는 날짜(최신순).
     pub fn day_feed_dates(&self, limit: usize) -> Result<Vec<NaiveDate>> {
         let mut stmt = self
@@ -740,6 +812,7 @@ fn row_to_document(r: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
         generated_at: parse_ts(&r.get::<_, String>(3)?).map_err(map_bad)?,
         edited_at: parse_ts_opt(r.get(4)?).map_err(map_bad)?,
         run_id: r.get(5)?,
+        template: r.get(6)?,
     })
 }
 
@@ -849,6 +922,48 @@ mod tests {
     }
 
     #[test]
+    fn note_counts_by_date_skips_deleted_and_out_of_range() {
+        let s = Store::open_in_memory().unwrap();
+        let add = |day: NaiveDate, text: &str| {
+            s.note_add(&NewNote {
+                date: day,
+                ts: t("2026-09-04T01:00:00Z"),
+                text,
+                tags: &[],
+                mentions: &[],
+                source: "app",
+            })
+            .unwrap()
+        };
+        add(d(2026, 9, 1), "범위 밖(앞)");
+        add(d(2026, 9, 2), "하나");
+        add(d(2026, 9, 4), "둘 중 하나");
+        let gone = add(d(2026, 9, 4), "곧 삭제");
+        add(d(2026, 9, 4), "둘 중 둘");
+        add(d(2026, 9, 6), "범위 밖(뒤)");
+        assert!(s.note_delete(gone.id).unwrap());
+
+        // 양끝 포함 · 날짜 오름차순 · 삭제된 메모 제외 · 메모 없는 날(9/3)은 행 자체가 없다
+        assert_eq!(
+            s.note_counts(d(2026, 9, 2), d(2026, 9, 5)).unwrap(),
+            vec![(d(2026, 9, 2), 1), (d(2026, 9, 4), 2)]
+        );
+        // 그날 메모가 전부 삭제되면 날짜가 빠진다
+        for n in s.notes_for(d(2026, 9, 2)).unwrap() {
+            assert!(s.note_delete(n.id).unwrap());
+        }
+        assert_eq!(
+            s.note_counts(d(2026, 9, 2), d(2026, 9, 5)).unwrap(),
+            vec![(d(2026, 9, 4), 2)]
+        );
+        assert!(
+            s.note_counts(d(2026, 9, 7), d(2026, 9, 9))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn runs_lifecycle_and_abandon() {
         let s = Store::open_in_memory().unwrap();
         let id = s.run_start(d(2026, 9, 3), run_kind::MANUAL).unwrap();
@@ -895,6 +1010,7 @@ mod tests {
             generated_at: t("2026-09-03T09:42:00Z"),
             edited_at: None,
             run_id: Some(1),
+            template: Some("retro".into()),
         };
         s.document_put(&doc).unwrap();
         assert_eq!(s.document_get(day).unwrap().unwrap(), doc);
@@ -924,6 +1040,7 @@ mod tests {
         let after = s.document_get(day).unwrap().unwrap();
         assert!(!after.is_edited());
         assert_eq!(after.run_id, Some(2));
+        assert_eq!(after.template.as_deref(), Some("retro"));
 
         s.document_put(&Document {
             date: d(2026, 9, 1),
@@ -1088,27 +1205,149 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v1_db_to_v2() {
+    fn day_feed_range_is_inclusive_and_ascending() {
         let s = Store::open_in_memory().unwrap();
-        // v1 DB 흉내: 새 테이블을 지우고 버전을 1 로 되돌린다.
+        for day in [d(2026, 9, 1), d(2026, 9, 5), d(2026, 9, 3), d(2026, 9, 9)] {
+            let json = format!("{{\"day\":\"{day}\"}}");
+            s.day_feed_put(day, &json).unwrap();
+        }
+        let dates = |from, to| {
+            s.day_feed_range(from, to)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.0)
+                .collect::<Vec<_>>()
+        };
+
+        // 양끝 포함 · 날짜 오름차순
+        let rows = s.day_feed_range(d(2026, 9, 1), d(2026, 9, 5)).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+            vec![d(2026, 9, 1), d(2026, 9, 3), d(2026, 9, 5)]
+        );
+        assert_eq!(rows[1].1, "{\"day\":\"2026-09-03\"}");
+        assert!((Utc::now() - rows[0].2).num_seconds().abs() < 60);
+
+        // 하루짜리 범위 · 스냅샷이 없는 범위
+        assert_eq!(dates(d(2026, 9, 3), d(2026, 9, 3)), vec![d(2026, 9, 3)]);
+        assert!(dates(d(2026, 9, 6), d(2026, 9, 8)).is_empty());
+        // 거꾸로 준 범위는 빈 결과(BETWEEN 규칙)
+        assert!(dates(d(2026, 9, 5), d(2026, 9, 1)).is_empty());
+    }
+
+    #[test]
+    fn migrates_v1_db_to_current() {
+        let s = Store::open_in_memory().unwrap();
+        // v1 DB 흉내: 뒤에 생긴 테이블·열을 지우고 버전을 1 로 되돌린다.
         s.conn
-            .execute_batch("DROP TABLE day_feeds; PRAGMA user_version = 1;")
+            .execute_batch(
+                "DROP TABLE day_feeds;
+                 ALTER TABLE documents DROP COLUMN template;
+                 PRAGMA user_version = 1;",
+            )
             .unwrap();
         assert!(!has_table(&s, "day_feeds"));
+        assert!(!s.has_column("documents", "template").unwrap());
         assert_eq!(s.schema_version().unwrap(), 1);
         s.kv_set("k", "v").unwrap(); // 기존 데이터
 
         s.migrate().unwrap();
         assert!(has_table(&s, "day_feeds"));
+        assert!(s.has_column("documents", "template").unwrap());
         assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
-        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(s.schema_version().unwrap(), 3);
         assert_eq!(s.kv_get("k").unwrap().as_deref(), Some("v")); // 기존 데이터는 그대로
         s.day_feed_put(d(2026, 9, 3), "x").unwrap();
         assert_eq!(s.day_feed_get(d(2026, 9, 3)).unwrap().unwrap().0, "x");
 
-        // 새 DB 는 v1·v2 문이 모두 돌아 두 테이블이 다 있다.
+        // 새 DB 는 v1·v2·v3 문이 모두 돌아 테이블·열이 다 있다.
         let fresh = Store::open_in_memory().unwrap();
         assert!(has_table(&fresh, "notes") && has_table(&fresh, "day_feeds"));
+        assert!(fresh.has_column("documents", "template").unwrap());
         assert_eq!(fresh.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_v2_db_to_v3_keeping_old_documents() {
+        let s = Store::open_in_memory().unwrap();
+        // v2 DB 흉내: template 열을 지우고 버전을 2 로 되돌린다.
+        s.conn
+            .execute_batch("ALTER TABLE documents DROP COLUMN template; PRAGMA user_version = 2;")
+            .unwrap();
+        assert!(!s.has_column("documents", "template").unwrap());
+        assert_eq!(s.schema_version().unwrap(), 2);
+        // v2 시절 문서(템플릿 개념이 없던 행)
+        s.conn
+            .execute(
+                "INSERT INTO documents(date, summary_md, full_md, generated_at, run_id)
+                 VALUES ('2026-09-03', '## 요약', '옛 본문', '2026-09-03T09:42:00.000Z', 7)",
+                [],
+            )
+            .unwrap();
+
+        s.migrate().unwrap();
+        assert!(s.has_column("documents", "template").unwrap());
+        assert_eq!(s.schema_version().unwrap(), 3);
+
+        // 옛 행은 그대로 남고 템플릿만 NULL.
+        let old = s.document_get(d(2026, 9, 3)).unwrap().unwrap();
+        assert_eq!(old.full_md, "옛 본문");
+        assert_eq!(old.summary_md.as_deref(), Some("## 요약"));
+        assert_eq!(old.run_id, Some(7));
+        assert_eq!(old.template, None);
+
+        // 한 번 더 돌려도(버전이 어긋난 DB) ADD COLUMN 이 두 번 돌지 않는다.
+        s.conn.execute_batch("PRAGMA user_version = 2;").unwrap();
+        s.migrate().unwrap();
+        assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn document_template_roundtrip() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 3);
+        let mut doc = Document {
+            date: day,
+            summary_md: None,
+            full_md: "본문".into(),
+            generated_at: t("2026-09-03T09:42:00Z"),
+            edited_at: None,
+            run_id: None,
+            template: None,
+        };
+        s.document_put(&doc).unwrap();
+        assert_eq!(s.document_get(day).unwrap().unwrap().template, None);
+
+        for id in crate::template::TEMPLATE_IDS {
+            doc.template = Some(id.to_string());
+            s.document_put(&doc).unwrap();
+            assert_eq!(
+                s.document_get(day).unwrap().unwrap().template.as_deref(),
+                Some(id)
+            );
+        }
+        // 다시 만들며 템플릿을 비우면 지워진다.
+        doc.template = None;
+        s.document_put(&doc).unwrap();
+        assert_eq!(s.document_get(day).unwrap().unwrap().template, None);
+
+        // 사용자가 본문을 편집해도 템플릿은 그대로.
+        doc.template = Some("report".into());
+        s.document_put(&doc).unwrap();
+        assert!(s.document_mark_edited(day, "편집본", None).unwrap());
+        let e = s.document_get(day).unwrap().unwrap();
+        assert!(e.is_edited());
+        assert_eq!(e.template.as_deref(), Some("report"));
+
+        // JSON 왕복 — 템플릿 키가 없는 옛 JSON 도 읽힌다.
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""template":"report""#));
+        assert_eq!(serde_json::from_str::<Document>(&json).unwrap(), e);
+        let old = r#"{"date":"2026-09-03","summary_md":null,"full_md":"x",
+                      "generated_at":"2026-09-03T09:42:00Z","edited_at":null,"run_id":null}"#;
+        assert_eq!(
+            serde_json::from_str::<Document>(old).unwrap().template,
+            None
+        );
     }
 }

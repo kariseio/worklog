@@ -603,7 +603,7 @@ impl Engine {
             }
             ScheduleMode::Generate => {
                 // 자동 생성은 편집된 일지를 절대 덮어쓰지 않는다.
-                match generate::start(&self.app, date, run_kind::AUTO, false) {
+                match generate::start(&self.app, date, run_kind::AUTO, false, None) {
                     Ok(id) => Reminder {
                         date,
                         mode: "generate",

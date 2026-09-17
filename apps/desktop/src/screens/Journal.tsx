@@ -1,10 +1,11 @@
 // 일지 화면 — 왼쪽: 검색 · 달력 · 일지 목록, 오른쪽: 문서(보기/편집) · 저장 상태.
 import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
 import { Button, Chip, Empty, Icon, Pill, Spinner } from "../components/ui";
-import { api, type DocStatus, type Document, type SinkResult } from "../ipc";
+import { api, type DocStatus, type Document, type FeedKpis, type SinkResult } from "../ipc";
 import {
   errText,
   feed,
+  feedReason,
   genProgressRatio,
   generating,
   gotoDay,
@@ -16,6 +17,7 @@ import {
   startGenerate,
   toast,
 } from "../store";
+import { TEMPLATE_FALLBACK, loadTemplates, templateName } from "../templates";
 import { debounce, fmtDateLong, fmtDateShort, fmtTime, isWeekend, parseDate, renderMarkdown, toDateStr, todayStr } from "../util";
 import "./journal.css";
 
@@ -73,6 +75,25 @@ interface CalData {
   from: string;
   to: string;
   list: DocStatus[];
+}
+
+/** 날짜별 지표 — 달력과 같은 범위를 한 번에 읽는다(범위를 같이 둬 달을 바꾸는 동안 섞이지 않게). */
+interface KpiData {
+  from: string;
+  to: string;
+  map: Map<string, FeedKpis>;
+}
+
+const kpiEmpty = (k: FeedKpis) => !k.commits && !k.sessions && !k.meetings && !k.notes;
+
+/** "커밋 2 · 세션 3 · 메모 1" — 0 인 항목은 빼고, 모두 0 이면 "활동 없음". */
+function kpiLine(k: FeedKpis): string {
+  const parts: string[] = [];
+  if (k.commits) parts.push(`커밋 ${k.commits}`);
+  if (k.sessions) parts.push(`세션 ${k.sessions}`);
+  if (k.meetings) parts.push(`회의 ${k.meetings}`);
+  if (k.notes) parts.push(`메모 ${k.notes}`);
+  return parts.length ? parts.join(" · ") : "활동 없음";
 }
 
 // ---- 문서 표시 ----------------------------------------------------------------- //
@@ -230,6 +251,45 @@ export default function Journal() {
   });
   const statusMap = createMemo(() => new Map((cal()?.list ?? []).map((s) => [s.date, s.edited])));
 
+  // 지표는 곁들이는 정보다 — 읽지 못해도 목록은 그대로 두고(빈 Map), 토스트는 한 번만 띄운다.
+  let kpiToasted = false;
+  const [kpiData, { refetch: refetchKpis }] = createResource(month, async (ym): Promise<KpiData> => {
+    const g = monthGrid(ym);
+    const from = g[0].date;
+    const to = g[g.length - 1].date;
+    try {
+      return { from, to, map: new Map((await api.dayKpis(from, to)).map((d) => [d.date, d.kpis])) };
+    } catch (e) {
+      if (!kpiToasted) {
+        kpiToasted = true;
+        toast(`지표를 불러오지 못했어요 · ${errText(e)}`, "error");
+      }
+      return { from, to, map: new Map() };
+    }
+  });
+
+  /**
+   * 그날 지표(없으면 null — 줄을 그리지 않는다). 오늘은 실시간 피드를 먼저 쓰고,
+   * 보이는 달을 벗어난 날짜(검색 결과)는 검색 구간 지표로 받는다.
+   */
+  const kpisOf = (date: string): FeedKpis | null => {
+    if (date === today()) {
+      const f = feed();
+      if (f && f.date === date) return f.kpis;
+    }
+    const d = kpiData();
+    if (d && date >= d.from && date <= d.to) return d.map.get(date) ?? null;
+    const s = searchKpis();
+    if (s && date >= s.from && date <= s.to) return s.map.get(date) ?? null;
+    return null;
+  };
+
+  /** 그날 스냅샷에 활동이 하나라도 있는지(문서 없는 주말 줄을 살릴지 판단). */
+  const hasActivity = (date: string): boolean => {
+    const k = kpisOf(date);
+    return !!k && !kpiEmpty(k);
+  };
+
   /** 날짜 상태. null: 표시할 것 없음(미래 · 문서 없는 주말). 달을 바꾸는 동안 cal() 은 이전 달 자료라 범위를 확인한다. */
   const statusOf = (date: string): DayStatus | null => {
     if (date > today()) return null;
@@ -255,6 +315,33 @@ export default function Journal() {
     }
   });
 
+  // 검색 결과는 보이는 달을 벗어난다 — 검색 대상 전체 구간("가장 이른 날..가장 늦은 날")의 지표를 한 번 읽어 둔다.
+  // 구간이 그대로면 다시 읽지 않는다(검색어를 바꿔도 같은 구간이면 그대로).
+  const searchSpan = createMemo<string | null>(() => {
+    if (!q().trim()) return null;
+    const ds = allDates();
+    if (!ds || !ds.length) return null;
+    let min = ds[0];
+    let max = ds[0];
+    for (const d of ds) {
+      if (d < min) min = d;
+      if (d > max) max = d;
+    }
+    return `${min}..${max}`;
+  });
+  const [searchKpis, { refetch: refetchSearchKpis }] = createResource(searchSpan, async (span): Promise<KpiData> => {
+    const [from, to] = span.split("..");
+    try {
+      return { from, to, map: new Map((await api.dayKpis(from, to)).map((d) => [d.date, d.kpis])) };
+    } catch (e) {
+      if (!kpiToasted) {
+        kpiToasted = true;
+        toast(`지표를 불러오지 못했어요 · ${errText(e)}`, "error");
+      }
+      return { from, to, map: new Map() };
+    }
+  });
+
   // ---- 생성 상태 ------------------------------------------------------------- //
 
   /** 지금 만들고 있는 날짜(없으면 null). 스토어가 날짜를 채우기 전(시작 직후)에는 이 화면의 기록을 쓴다. */
@@ -266,15 +353,42 @@ export default function Journal() {
     return g.detail ? `${g.step} · ${g.detail}` : g.step;
   };
 
-  async function generate(date: string) {
+  /** `template` 을 주면 이번 한 번만 그 템플릿으로 만든다(비우면 설정의 기본 템플릿). */
+  async function generate(date: string, template?: string) {
     if (genDate()) {
       toast(`이미 생성 중입니다 (${fmtDateShort(genDate()!)})`, "info");
       return;
     }
     setLocalGen({ run_id: -1, date });
-    const id = await startGenerate(date);
+    const id = await startGenerate(date, undefined, template);
     setLocalGen(id == null ? null : { run_id: id, date });
   }
+
+  // ---- 템플릿('다시 생성' 옆 메뉴 · 문서에 붙는 칩) ---------------------------------- //
+
+  const [tpls] = createResource(loadTemplates);
+  const tplList = () => tpls() ?? TEMPLATE_FALLBACK;
+  const [tplOpen, setTplOpen] = createSignal(false);
+  // 메뉴가 열려 있는 동안만 바깥 클릭·Esc 를 듣는다. 편집·생성이 시작되면 스스로 닫힌다.
+  createEffect(() => {
+    if (!tplOpen()) return;
+    if (editing() || genDate()) {
+      setTplOpen(false);
+      return;
+    }
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target as Element | null)?.closest?.(".journal-regen")) setTplOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setTplOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onEsc);
+    onCleanup(() => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onEsc);
+    });
+  });
 
   // ---- 선택 · 초기화 ---------------------------------------------------------- //
 
@@ -332,7 +446,20 @@ export default function Journal() {
         setSinks((m) => new Map(m).set(d.date, d.sinks));
         if (d.date === selected()) void refetchDoc();
         void refetchCal();
+        void refetchKpis();
+        if (searchKpis.state === "ready") void refetchSearchKpis();
         if (allDates.state === "ready") void refetchDates();
+      },
+      { defer: true },
+    ),
+  );
+
+  // 메모가 바뀌면(오늘 화면 · 빠른 메모 창) 그날 지표의 메모 수가 달라진다 — 보이는 달을 다시 읽는다.
+  createEffect(
+    on(
+      feed,
+      () => {
+        if (untrack(feedReason).includes("note")) void refetchKpis();
       },
       { defer: true },
     ),
@@ -505,18 +632,17 @@ export default function Journal() {
       const date = `${ym}-${pad2(d)}`;
       const s = statusOf(date);
       const isToday = date === today();
-      // 오늘은 주말이어도 항상 보인다(오늘 지표·만들기 버튼). 그 외 문서 없는 주말은 생략.
-      if (!isToday && (s === null || (s === "unknown" && isWeekend(date)))) continue;
+      if (!isToday) {
+        if (date > today()) continue;
+        // 오늘은 주말이어도 항상 보인다(오늘 지표·만들기 버튼). 그 외 문서 없는 주말은
+        // 그날 활동이 있을 때만 '미생성'으로 세운다(만들기 버튼이 나오게).
+        if (s === null && !hasActivity(date)) continue;
+        if (s === "unknown" && isWeekend(date)) continue;
+      }
       out.push({ date, status: s ?? "none", doc: cache.get(date) });
     }
     return out;
   });
-
-  /** 오늘 행에 붙일 실시간 지표(피드가 오늘 것일 때만). */
-  const todayKpis = () => {
-    const f = feed();
-    return f && f.date === today() ? f.kpis : null;
-  };
 
   // ---- 저장 상태 ------------------------------------------------------------- //
 
@@ -575,6 +701,17 @@ export default function Journal() {
         <Chip>편집됨</Chip>
       </Show>
     </>
+  );
+
+  /** 목록 항목 아래 한 줄로 붙는 그날 지표(스냅샷이 있는 날만). */
+  const EntryKpis = (p: { date: string }) => (
+    <Show when={kpisOf(p.date)}>
+      {(k) => (
+        <div class="journal-entry-kpis muted small" classList={{ "is-empty": kpiEmpty(k()) }}>
+          {kpiLine(k())}
+        </div>
+      )}
+    </Show>
   );
 
   const onEntryKey = (e: KeyboardEvent, date: string) => {
@@ -713,13 +850,7 @@ export default function Journal() {
                           </Button>
                         </Show>
                       </div>
-                      <Show when={en.date === today() && todayKpis()}>
-                        {(k) => (
-                          <div class="journal-entry-kpis muted small">
-                            커밋 {k().commits} · 세션 {k().sessions} · 회의 {k().meetings} · 메모 {k().notes}
-                          </div>
-                        )}
-                      </Show>
+                      <EntryKpis date={en.date} />
                     </div>
                   )}
                 </For>
@@ -768,6 +899,7 @@ export default function Journal() {
                             {h.snip}
                           </div>
                         </Show>
+                        <EntryKpis date={h.date} />
                       </div>
                     )}
                   </For>
@@ -790,6 +922,13 @@ export default function Journal() {
                         {fmtTime(d().generated_at)} 생성
                         {d().edited_at ? ` · 편집됨 ${fmtTime(d().edited_at)}` : ""}
                       </Pill>
+                    )}
+                  </Show>
+                  <Show when={templateName(tplList(), cur()?.template)}>
+                    {(name) => (
+                      <Chip class="journal-tplchip" title="이 일지를 만든 템플릿">
+                        {name()}
+                      </Chip>
                     )}
                   </Show>
                   <span class="grow" />
@@ -821,15 +960,48 @@ export default function Journal() {
                         </Button>
                       }
                     >
-                      <Button
-                        icon="refresh"
-                        title="다시 생성"
-                        aria-label="다시 생성"
-                        disabled={editing() || !!genDate()}
-                        onClick={() => void generate(sel())}
-                      >
-                        <span class="journal-btn-label">다시 생성</span>
-                      </Button>
+                      <div class="journal-regen">
+                        <Button
+                          icon="refresh"
+                          class="journal-regen-main"
+                          title="다시 생성 · 설정의 기본 템플릿"
+                          aria-label="다시 생성"
+                          disabled={editing() || !!genDate()}
+                          onClick={() => void generate(sel())}
+                        >
+                          <span class="journal-btn-label">다시 생성</span>
+                        </Button>
+                        <Button
+                          icon="down"
+                          class="journal-regen-caret"
+                          title="템플릿 골라 다시 생성"
+                          aria-label="템플릿 골라 다시 생성"
+                          aria-haspopup="menu"
+                          aria-expanded={tplOpen()}
+                          disabled={editing() || !!genDate()}
+                          onClick={() => setTplOpen((v) => !v)}
+                        />
+                        <Show when={tplOpen()}>
+                          <div class="journal-tplmenu" role="menu">
+                            <For each={tplList()}>
+                              {(t) => (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  class="journal-tplitem"
+                                  title={t.description || undefined}
+                                  onClick={() => {
+                                    setTplOpen(false);
+                                    void generate(sel(), t.id);
+                                  }}
+                                >
+                                  {t.name}
+                                </button>
+                              )}
+                            </For>
+                          </div>
+                        </Show>
+                      </div>
                     </Show>
                     <Button icon="copy" title="복사" aria-label="복사" onClick={() => void copyDoc()}>
                       <span class="journal-btn-label">복사</span>

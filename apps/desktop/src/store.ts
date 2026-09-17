@@ -1,5 +1,5 @@
 // 앱 전역 상태 — 피드·생성 진행·설정·알림·토스트. 화면들은 여기 시그널만 읽고 액션 함수를 부른다.
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { applyAppearance } from "./appearance";
 import { todayStr } from "./util";
@@ -163,17 +163,22 @@ export async function refreshNow() {
 
 /**
  * 일지 생성. 편집된 일지가 있으면 확인을 받고 덮어쓴다.
+ * `template` 을 주면 이번 한 번만 그 템플릿으로 만든다(비우면 설정의 기본 템플릿).
  * 돌려주는 값: 시작했으면 run_id, 취소·실패면 null.
  */
-export async function startGenerate(date?: string, confirmFn: (msg: string) => boolean = (m) => window.confirm(m)): Promise<number | null> {
+export async function startGenerate(
+  date?: string,
+  confirmFn: (msg: string) => boolean = (m) => window.confirm(m),
+  template?: string,
+): Promise<number | null> {
   try {
-    return await api.generateStart(date);
+    return await api.generateStart(date, false, template);
   } catch (e) {
     const msg = errText(e);
     if (msg.includes(EDITED_PREFIX)) {
       if (!confirmFn(`${msg}\n\n그래도 다시 만들까요?`)) return null;
       try {
-        return await api.generateStart(date, true);
+        return await api.generateStart(date, true, template);
       } catch (e2) {
         toast(errText(e2), "error");
         return null;
@@ -241,8 +246,11 @@ export function initStore(): () => void {
   void (async () => {
     const got = await Promise.all([
       on("feed:changed", (p) => {
-        setFeed(p.feed);
-        setFeedReason(p.reason);
+        // 둘을 한 묶음으로 — 따로 쓰면 setFeed 가 끝나며 이펙트가 먼저 돌아 사유가 한 박자 늦는다.
+        batch(() => {
+          setFeed(p.feed);
+          setFeedReason(p.reason);
+        });
         // 날짜가 넘어가 보고 있던 날짜가 더는 '지난 날짜'가 아니면 실시간 피드로 되돌린다.
         if (viewDate() && viewDate()! >= p.feed.date) setViewDate(null);
       }),

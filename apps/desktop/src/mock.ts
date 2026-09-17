@@ -5,17 +5,20 @@ import type {
   CalendarInfo,
   Check,
   Config,
+  DayKpis,
   DocStatus,
   Document,
   DriveInfo,
   Events,
   Feed,
   FeedItem,
+  FeedKpis,
   GenStatus,
   Note,
   Run,
   SettingsView,
   SinkResult,
+  TemplateInfo,
   UpdateInfo,
 } from "./ipc";
 
@@ -51,6 +54,13 @@ const shift = (n: number) => {
 const atOn = (day: string, hh: number, mm: number) => {
   const [y, m, d] = day.split("-").map(Number);
   return new Date(y, m - 1, d, hh, mm, 0, 0).toISOString();
+};
+/** from~to(양끝 포함) 사이의 날짜들. from 이 to 보다 뒤면 빈 목록. */
+const daysBetween = (from: string, to: string): string[] => {
+  const [y, m, d] = from.split("-").map(Number);
+  const out: string[] = [];
+  for (const cur = new Date(y, m - 1, d); dateStr(cur) <= to && out.length < 400; cur.setDate(cur.getDate() + 1)) out.push(dateStr(cur));
+  return out;
 };
 /** 오늘로부터 며칠 전인지. */
 const daysAgo = (day: string) => {
@@ -142,6 +152,21 @@ function pastFeed(day: string, recollect: boolean): Feed {
   };
 }
 
+/**
+ * 지난 날 스냅샷의 지표 — 날짜에 따라 조금씩 다르게(커밋 0 인 날 · 회의 없는 날이 섞이게),
+ * 주말은 활동 없음. 메모 수는 실제 가짜 메모 목록에서 센다(메모를 남기면 바로 반영된다).
+ */
+function pastKpis(day: string): FeedKpis {
+  const [y, m, d] = day.split("-").map(Number);
+  const dow = new Date(y, m - 1, d).getDay();
+  const mine = notes.filter((n) => !n.deleted && n.date === day).length;
+  if (dow === 0 || dow === 6) return { commits: 0, sessions: 0, meetings: 0, notes: mine, tokens: 0, insertions: 0, deletions: 0 };
+  return {
+    commits: d % 5, sessions: 1 + (d % 3), meetings: d % 2, notes: mine,
+    tokens: 8_000 + (d % 7) * 1_500, insertions: 40 + d * 3, deletions: 10 + d,
+  };
+}
+
 let feed = buildFeed();
 function publish(reason: string, added: FeedItem[] = [], updated: FeedItem[] = [], removed: string[] = []) {
   feed = buildFeed();
@@ -175,13 +200,34 @@ const SAMPLE_MD = (d: string) => `# 📝 업무일지 ${d}
 ## 📊 지표
 커밋 1 (+84 / −27) · 세션 2 · 회의 1 · 메모 3 · 활동 09:20–17:05
 `;
-for (const [off, edited] of [[-1, true], [-2, false], [-4, false], [-5, false], [-8, false]] as const) {
+for (const [off, edited, tpl] of [[-1, true, "standard"], [-2, false, "report"], [-4, false, "standard"], [-5, false, "retro"], [-8, false, null]] as const) {
   const d = shift(off);
   docs.set(d, {
     date: d, summary_md: "## 한 줄 요약\n…", full_md: SAMPLE_MD(d), generated_at: at(18, 42, off),
-    edited_at: edited ? at(20, 15, off) : null, run_id: 100 + off,
+    edited_at: edited ? at(20, 15, off) : null, run_id: 100 + off, template: tpl,
   });
 }
+
+const TEMPLATES: TemplateInfo[] = [
+  {
+    id: "standard",
+    name: "표준",
+    description: "하루를 고루 담는 기본 형식 — 성과 · 결정 · 프로젝트 · 흐름",
+    sections: ["오늘의 성과", "결정 · 요청 · 할 일", "프로젝트별 진행", "시간대별 흐름", "지표", "타임라인"],
+  },
+  {
+    id: "report",
+    name: "보고용",
+    description: "주간보고에 그대로 옮기기 좋은 짧은 형식",
+    sections: ["오늘의 성과", "결정 · 요청 · 할 일", "지표"],
+  },
+  {
+    id: "retro",
+    name: "회고용",
+    description: "시간 흐름과 막힌 곳을 자세히 남기는 형식",
+    sections: ["시간대별 흐름", "프로젝트별 진행", "막힌 것 · 배운 것", "결정 · 요청 · 할 일", "지표", "타임라인"],
+  },
+];
 
 let runSeq = 200;
 const runs: Run[] = [
@@ -193,7 +239,7 @@ const runs: Run[] = [
 
 const config: Config = {
   timezone: "Asia/Seoul", include_raw_data: false,
-  summarizer: { provider: "auto", model: "claude-opus-4-8", language: "ko", max_tokens: 4000, map_reduce_chars: 20000, map_workers: 4 },
+  summarizer: { provider: "auto", model: "claude-opus-4-8", language: "ko", max_tokens: 4000, map_reduce_chars: 20000, map_workers: 4, template: "standard" },
   outputs: {
     markdown: { enabled: true, dir: "" },
     obsidian: { enabled: true, vault_dir: "D:\\notes\\vault", subdir: "업무일지" },
@@ -240,6 +286,21 @@ export const mockApi = {
     await wait(recollect ? 800 : 220);
     return day === TODAY ? feed : pastFeed(day, recollect);
   },
+  // 스냅샷이 있는 날만 돌려준다(미래 · 아주 오래된 날은 없다). 오늘은 실시간 피드의 지표.
+  dayKpis: async (from: string, to: string): Promise<DayKpis[]> => {
+    await wait(140);
+    const out: DayKpis[] = [];
+    for (const day of daysBetween(from, to)) {
+      if (day > TODAY) break;
+      if (daysAgo(day) > 60) continue;
+      out.push(
+        day === TODAY
+          ? { date: day, kpis: feed.kpis, stored_at: new Date().toISOString() }
+          : { date: day, kpis: pastKpis(day), stored_at: atOn(day, 18, 42) },
+      );
+    }
+    return out;
+  },
   refreshNow: async () => {
     emit("feed:refreshing", true);
     await wait(900);
@@ -278,13 +339,16 @@ export const mockApi = {
   },
   notesFor: async () => notes.filter((n) => !n.deleted),
 
-  generateStart: async (date?: string, overwriteEdited = false) => {
+  generateStart: async (date?: string, overwriteEdited = false, template?: string) => {
     const d = date ?? TODAY;
     if (gen) throw `이미 생성 중입니다 (${gen.date} · ${gen.step})`;
     const doc = docs.get(d);
     if (doc?.edited_at && !overwriteEdited) throw `편집된 일지가 있습니다(${d}). 다시 만들면 편집한 내용이 사라집니다.`;
     const id = ++runSeq;
-    gen = { run_id: id, date: d, kind: "manual", step: "준비", detail: "", started: new Date().toISOString() };
+    // 백엔드처럼 모르는 id 는 기본 템플릿으로 되돌린다.
+    const want = template ?? config.summarizer.template;
+    const tplId = TEMPLATES.some((t) => t.id === want) ? want : "standard";
+    gen = { run_id: id, date: d, kind: "manual", template: tplId, step: "준비", detail: "", started: new Date().toISOString() };
     runs.unshift({ id, date: d, kind: "manual", started: gen.started, finished: null, status: "running", error: null, duration_ms: null });
     const steps: [string, string, number][] = [["수집", "", 900], ["요약", "세션 0/7", 700], ["요약", "세션 3/7", 900], ["요약", "세션 7/7", 700], ["요약", "종합", 1200], ["저장", "", 600]];
     let i = 0;
@@ -296,7 +360,7 @@ export const mockApi = {
         emit("generate:progress", { run_id: id, step, detail });
         genTimer = setTimeout(tick, ms);
       } else {
-        docs.set(d, { date: d, summary_md: "## 한 줄 요약\n…", full_md: SAMPLE_MD(d), generated_at: new Date().toISOString(), edited_at: null, run_id: id });
+        docs.set(d, { date: d, summary_md: "## 한 줄 요약\n…", full_md: SAMPLE_MD(d), generated_at: new Date().toISOString(), edited_at: null, run_id: id, template: tplId });
         const r = runs.find((x) => x.id === id)!;
         Object.assign(r, { finished: new Date().toISOString(), status: "ok", duration_ms: Date.now() - new Date(r.started).getTime() });
         gen = null;
@@ -318,6 +382,7 @@ export const mockApi = {
     return true;
   },
   generateStatus: async () => gen,
+  templates: async (): Promise<TemplateInfo[]> => TEMPLATES.map((t) => ({ ...t })),
   runsRecent: async (limit = 20) => runs.slice(0, limit),
 
   // 실제 백엔드처럼 매번 새 객체를 돌려준다(같은 객체를 돌려주면 화면이 갱신을 못 알아챈다).

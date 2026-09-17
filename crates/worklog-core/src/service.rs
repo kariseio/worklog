@@ -29,6 +29,7 @@ use crate::{
     },
     store::Store,
     summarize::Summarizer,
+    template,
     time::{TimeError, fmt_time, get_tz, parse_iso_in, resolve_day},
 };
 
@@ -354,47 +355,6 @@ pub fn availability_line(cfg: &Config, statuses: &[SourceStatus]) -> String {
     )
 }
 
-/// 최종 문서 조합: 제목 + 요약(없으면 안내) + 지표 + (선택) 원본 부록.
-pub fn compose_full(
-    target: NaiveDate,
-    summary: Option<&str>,
-    facts: &str,
-    analysis_md: &str,
-    include_raw: bool,
-) -> String {
-    let mut lines: Vec<String> = vec![format!("# 📝 업무일지 {target}"), String::new()];
-    // (수집 소스·저장 대상 표기는 문서에 넣지 않음 — 앱 화면 칩으로만 표시)
-    match summary {
-        Some(s) => lines.push(s.trim().to_string()),
-        None => lines.push("> LLM 요약을 사용하지 않았습니다. 아래 지표를 참고하세요.".into()),
-    }
-    if !analysis_md.trim().is_empty() {
-        lines.push(String::new());
-        lines.push(analysis_md.trim().to_string());
-    }
-    if include_raw {
-        lines.extend(
-            [
-                "",
-                "---",
-                "",
-                "<details>",
-                "<summary>📊 수집 데이터 원본</summary>",
-                "",
-                facts.trim(),
-                "",
-                "</details>",
-                "",
-            ]
-            .iter()
-            .map(|s| s.to_string()),
-        );
-    } else {
-        lines.push(String::new());
-    }
-    lines.join("\n")
-}
-
 /// 수집 데이터로부터 렌더 산출물 일체(요약 입력 신호 포함).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rendered {
@@ -455,6 +415,7 @@ pub fn open_store() -> Option<Store> {
 }
 
 /// 수집 → (정제 신호) 요약 → 조합까지 한 번에. (저장은 별도) 메모는 기본 저장소에서 읽는다.
+/// 템플릿은 설정값(`cfg.summarizer.template`)을 쓴다.
 pub fn generate(
     cfg: &Config,
     date_spec: Option<&str>,
@@ -463,9 +424,18 @@ pub fn generate(
 ) -> Result<GenerateResult, TimeError> {
     let summarizer = Summarizer::new(cfg.summarizer.clone());
     let store = open_store();
-    generate_with(cfg, date_spec, no_llm, sources, &summarizer, store.as_ref())
+    generate_with(
+        cfg,
+        date_spec,
+        no_llm,
+        sources,
+        &summarizer,
+        store.as_ref(),
+        None,
+    )
 }
 
+/// `template` 이 None 이면 `cfg.summarizer.template`, 모르는 id 면 `standard`.
 pub fn generate_with(
     cfg: &Config,
     date_spec: Option<&str>,
@@ -473,14 +443,17 @@ pub fn generate_with(
     sources: Option<&[String]>,
     summarizer: &Summarizer,
     store: Option<&Store>,
+    template: Option<&str>,
 ) -> Result<GenerateResult, TimeError> {
+    let tpl = template::resolve(template.unwrap_or(&cfg.summarizer.template));
     let ctx = make_context(cfg, date_spec)?;
     let wanted = enabled_sources(cfg, sources);
     let note_items = notes::items_for(store, ctx.target_date());
     let Collected { data, statuses } = collect(cfg, &ctx, &wanted, note_items);
     let rendered = render_all(cfg, &data, &statuses, ctx.tz());
     let summary = if !no_llm && !data.is_empty() {
-        summarizer.summarize_day(
+        summarizer.summarize_day_with(
+            &template::system_prompt(tpl),
             &rendered.signal,
             &ctx.target_date().to_string(),
             &rendered.availability,
@@ -488,11 +461,13 @@ pub fn generate_with(
     } else {
         None
     };
-    let full = compose_full(
+    let full = template::compose(
+        tpl,
         ctx.target_date(),
         summary.as_deref(),
+        &rendered.analysis,
+        ctx.tz(),
         &rendered.facts,
-        &rendered.analysis_md,
         cfg.include_raw_data,
     );
     let worklog = WorkLog {
@@ -660,27 +635,29 @@ mod tests {
     }
 
     #[test]
-    fn compose_full_raw_toggle() {
-        let md = compose_full(
+    fn generated_document_uses_the_template_composer() {
+        let tz = get_tz("Asia/Seoul");
+        let a = crate::analyze::analyze(&crate::analyze::tests::sample(), tz);
+        let md = crate::template::compose(
+            "standard",
             d(2026, 7, 6),
-            Some("## 한 줄 요약\n오늘 한 일"),
+            Some("> 오늘 한 일"),
+            &a,
+            tz,
             "# 원본 사실 데이터\n- 커밋 목록 등",
-            "## 📊 오늘 지표\n- 커밋 3",
             false,
         );
-        assert!(md.starts_with(
-            "# 📝 업무일지 2026-07-06\n\n## 한 줄 요약\n오늘 한 일\n\n## 📊 오늘 지표\n- 커밋 3\n"
-        ));
+        // 문서 제목은 요일까지, 이모지 없이.
+        assert!(
+            md.starts_with("# 업무일지 2026-07-06 (월)\n\n> 오늘 한 일\n\n## 지표\n- 커밋 **2**")
+        );
+        assert!(!md.contains("📝 업무일지") && !md.contains("핵심 성과"));
         assert!(
             !md.contains("수집 데이터 원본")
                 && !md.contains("원본 사실 데이터")
-                && !md.contains("<details>")
+                && !md.contains("<summary>수집")
         );
         assert!(!md.contains("수집 소스") && !md.contains("저장 대상"));
-        let md = compose_full(d(2026, 7, 6), Some("s"), "# 원본 사실 데이터", "", true);
-        assert!(md.contains("<details>\n<summary>📊 수집 데이터 원본</summary>\n\n# 원본 사실 데이터\n\n</details>\n"));
-        let md = compose_full(d(2026, 7, 6), None, "", "", false);
-        assert!(md.contains("> LLM 요약을 사용하지 않았습니다. 아래 지표를 참고하세요."));
         assert!(md.ends_with("\n"));
     }
 
@@ -779,8 +756,28 @@ mod tests {
                 .full_markdown
                 .contains("LLM 요약을 사용하지 않았습니다")
         );
-        assert!(r.worklog.full_markdown.contains("## 📊 오늘 지표"));
+        assert!(
+            r.worklog
+                .full_markdown
+                .starts_with("# 업무일지 2026-07-06 (월)\n")
+        );
+        assert!(r.worklog.full_markdown.contains("## 지표\n- 커밋 **0**"));
         assert!(r.rendered.signal.is_empty() || r.rendered.signal.starts_with("가용 데이터"));
+
+        // 템플릿을 골라 부르면 그 템플릿의 결정론적 부분으로 조합된다.
+        let summarizer = Summarizer::new(cfg.summarizer.clone());
+        let r = generate_with(
+            &cfg,
+            Some("2026-07-06"),
+            true,
+            None,
+            &summarizer,
+            None,
+            Some("report"),
+        )
+        .unwrap();
+        assert!(r.worklog.full_markdown.contains("## 지표"));
+        assert!(!r.worklog.full_markdown.contains("<details>"));
     }
 
     #[test]

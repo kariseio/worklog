@@ -241,6 +241,9 @@ pub struct SummarizerConfig {
     pub map_reduce_chars: usize,
     /// 세션별 요약 병렬 수.
     pub map_workers: usize,
+    /// 기본 일지 템플릿 — standard | report | retro ([`crate::template::TEMPLATE_IDS`]).
+    /// 모르는 값은 [`Config::normalize`] 에서 `standard` 로 돌아간다.
+    pub template: String,
 }
 
 impl Default for SummarizerConfig {
@@ -252,6 +255,7 @@ impl Default for SummarizerConfig {
             max_tokens: 4000,
             map_reduce_chars: 20_000,
             map_workers: 4,
+            template: crate::template::DEFAULT_TEMPLATE.into(),
         }
     }
 }
@@ -640,6 +644,8 @@ impl Config {
         if self.timezone.trim().is_empty() {
             self.timezone = "Asia/Seoul".into();
         }
+        // 일지 템플릿도 정해진 값만 — 모르는 값·빈 칸은 standard 로.
+        self.summarizer.template = crate::template::resolve(&self.summarizer.template).to_string();
         // 겉모양은 정해진 값만 — 모르는 값·빈 칸은 기본값으로.
         let d = AppearanceConfig::default();
         let a = &mut self.appearance;
@@ -949,6 +955,40 @@ mod tests {
     }
 
     #[test]
+    fn summarizer_template_defaults_and_normalizes() {
+        // 옛 파일(키 없음) → 기본 템플릿.
+        let c: Config = serde_json::from_str(V1_SAMPLE).unwrap();
+        assert_eq!(c.summarizer.template, "standard");
+        assert_eq!(
+            SummarizerConfig::default().template,
+            crate::template::DEFAULT_TEMPLATE
+        );
+
+        // 모르는 값·빈 칸은 standard, 공백·대문자만 다른 값은 살린다.
+        let mut c = Config::default();
+        c.summarizer.template = "  Retro ".into();
+        c.normalize();
+        assert_eq!(c.summarizer.template, "retro");
+        c.summarizer.template = "없는템플릿".into();
+        c.normalize();
+        assert_eq!(c.summarizer.template, "standard");
+        c.summarizer.template = String::new();
+        c.normalize();
+        assert_eq!(c.summarizer.template, "standard");
+
+        // 파일에서 읽을 때도 같은 정리가 걸리고, 왕복 저장에 살아남는다.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        fs::write(&p, r#"{"summarizer":{"template":"REPORT"}}"#).unwrap();
+        let c = Config::load_from(&p);
+        assert_eq!(c.summarizer.template, "report");
+        c.save_to(&p).unwrap();
+        assert_eq!(Config::load_from(&p).summarizer.template, "report");
+        // 비밀이 아니므로 UI 로 나가는 사본에도 남는다.
+        assert_eq!(c.redacted().summarizer.template, "report");
+    }
+
+    #[test]
     fn appearance_defaults() {
         let a = Config::default().appearance;
         assert_eq!(a, AppearanceConfig::default());
@@ -1050,7 +1090,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("settings.json");
         fs::write(&p, r#"{"timezone":"Asia/Seoul"}"#).unwrap();
-        assert_eq!(Config::load_from(&p).appearance, AppearanceConfig::default());
+        assert_eq!(
+            Config::load_from(&p).appearance,
+            AppearanceConfig::default()
+        );
 
         // 일부 키만 있는 파일은 나머지만 기본값.
         let c: Config = serde_json::from_str(r#"{"appearance":{"theme":"light"}}"#).unwrap();

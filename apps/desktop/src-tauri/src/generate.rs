@@ -23,6 +23,7 @@ use worklog_core::{
     service,
     store::{Document, run_kind, run_status},
     summarize::Summarizer,
+    template,
 };
 
 use crate::{
@@ -80,13 +81,19 @@ impl Outcome {
 
 /// 생성 시작. 이미 돌고 있거나, 편집된 일지가 있는데 `overwrite_edited` 가 아니면 거절.
 /// 자동 실행(`run_kind::AUTO`)은 편집된 일지를 절대 덮어쓰지 않는다. 돌려주는 값은 `runs.id`.
+///
+/// `template` 은 이번 한 번만 쓸 일지 템플릿 id. None 이면 설정값(`summarizer.template`)을 쓴다.
+/// 모르는 id 는 [`template::resolve`] 가 기본 템플릿으로 되돌린다.
 pub fn start(
     app: &AppHandle,
     date: NaiveDate,
     kind: &'static str,
     overwrite_edited: bool,
+    template: Option<String>,
 ) -> Result<i64, String> {
     let state = app.state::<AppState>();
+    let cfg_template = state.config().summarizer.template;
+    let tpl = template::resolve(template.as_deref().unwrap_or(&cfg_template)).to_string();
     let mut slot = state.job();
     if let Some(j) = slot.as_ref() {
         return Err(format!(
@@ -111,6 +118,7 @@ pub fn start(
             run_id,
             date,
             kind: kind.to_string(),
+            template: tpl.clone(),
             step: "준비".into(),
             detail: String::new(),
             started: Utc::now(),
@@ -123,7 +131,7 @@ pub fn start(
     thread::Builder::new()
         .name(format!("worklog-gen-{run_id}"))
         .spawn(move || {
-            let outcome = catch_unwind(AssertUnwindSafe(|| run(&app, run_id, date, &cancel)))
+            let outcome = catch_unwind(AssertUnwindSafe(|| run(&app, run_id, date, &cancel, &tpl)))
                 .unwrap_or_else(|_| Outcome::failed("생성 중 내부 오류(패닉)"));
             finish(&app, run_id, date, outcome);
         })
@@ -162,7 +170,13 @@ pub fn cancel(app: &AppHandle) -> bool {
     true
 }
 
-fn run(app: &AppHandle, run_id: i64, date: NaiveDate, cancel: &Arc<AtomicBool>) -> Outcome {
+fn run(
+    app: &AppHandle,
+    run_id: i64,
+    date: NaiveDate,
+    cancel: &Arc<AtomicBool>,
+    tpl: &str,
+) -> Outcome {
     let state = app.state::<AppState>();
     let cfg = state.config();
     let progress: Arc<worklog_core::summarize::ProgressFn> = {
@@ -214,18 +228,25 @@ fn run(app: &AppHandle, run_id: i64, date: NaiveDate, cancel: &Arc<AtomicBool>) 
         Summarizer::new(cfg.summarizer.clone())
             .with_progress(progress.clone())
             .with_cancel(cancel.clone())
-            .summarize_day(&rendered.signal, &date.to_string(), &rendered.availability)
+            .summarize_day_with(
+                &template::system_prompt(tpl),
+                &rendered.signal,
+                &date.to_string(),
+                &rendered.availability,
+            )
     };
     if is_cancelled() {
         return Outcome::cancelled();
     }
 
     progress("저장", "");
-    let full = service::compose_full(
+    let full = template::compose(
+        tpl,
         date,
         summary.as_deref(),
+        &rendered.analysis,
+        ctx.tz(),
         &rendered.facts,
-        &rendered.analysis_md,
         cfg.include_raw_data,
     );
     let worklog = WorkLog {
@@ -242,6 +263,7 @@ fn run(app: &AppHandle, run_id: i64, date: NaiveDate, cancel: &Arc<AtomicBool>) 
         generated_at: Utc::now(),
         edited_at: None,
         run_id: Some(run_id),
+        template: Some(tpl.to_string()),
     };
     if let Err(e) = state.with_store(|s| s.document_put(&doc).map_err(|e| e.to_string())) {
         return Outcome::failed(format!("문서 저장 실패: {e}"));

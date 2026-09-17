@@ -19,6 +19,7 @@ import { createStore, produce, reconcile, unwrap, type SetStoreFunction } from "
 import type { Appearance } from "../appearance";
 import { Button, Chip, Field, Icon, Pill, Select, Spinner, TextInput, Toggle } from "../components/ui";
 import { api, type CalendarInfo, type Check, type Config, type DriveInfo, type Run, type SettingsView, type UpdateInfo } from "../ipc";
+import { TEMPLATE_FALLBACK, loadTemplates } from "../templates";
 import {
   errText,
   generating,
@@ -1613,6 +1614,16 @@ function SummaryTab(props: { f: Ctx }) {
   const usesCli = () => s().provider === "auto" || s().provider === "claude_cli";
   const providerOpts = () => (PROVIDERS.some((p) => p.value === s().provider) ? PROVIDERS : [...PROVIDERS, { value: s().provider, label: s().provider }]);
 
+  // 템플릿 목록은 한 번만 읽어 둔다(일지 화면의 '다시 생성' 메뉴와 같은 자료).
+  const [tpls] = createResource(loadTemplates);
+  const tplList = () => tpls() ?? TEMPLATE_FALLBACK;
+  const tplOpts = () => tplList().map((t) => ({ value: t.id, label: t.name }));
+  const tplDesc = () => {
+    const t = tplList().find((x) => x.id === s().template);
+    if (!t) return "";
+    return t.sections.length ? `${t.description} — ${t.sections.join(" · ")}` : t.description;
+  };
+
   // 시간대는 올바른 IANA 이름일 때만 초안에 넣고 저장한다 — 잘못된 글자는 칸에만 남기고 아래에 알린다.
   const [tzText, setTzText] = createSignal(f.draft.timezone);
   const [tzErr, setTzErr] = createSignal<string | null>(null);
@@ -1734,6 +1745,17 @@ function SummaryTab(props: { f: Ctx }) {
 
       <section class="settings-sec">
         <SecHead title="문서" />
+        <Field label="일지 템플릿" top hint="일지 화면의 '다시 생성' 옆 메뉴로 이번 한 번만 다른 템플릿을 쓸 수도 있습니다">
+          <PickChips
+            value={s().template}
+            options={tplOpts()}
+            onPick={(v) => {
+              f.set("summarizer", "template", v);
+              f.now();
+            }}
+          />
+          <Show when={tplDesc()}>{(d) => <div class="muted small">{d()}</div>}</Show>
+        </Field>
         <Field label="시간대" hint="예: Asia/Seoul · 피드와 일지의 하루 경계">
           <TextInput
             class="settings-shortcut"

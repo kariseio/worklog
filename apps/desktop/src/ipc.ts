@@ -43,6 +43,13 @@ export interface FeedKpis {
   deletions: number;
 }
 
+/** 저장된 하루 스냅샷에서 뽑은 지표(달력·목록에 붙이는 한 줄). */
+export interface DayKpis {
+  date: string;
+  kpis: FeedKpis;
+  stored_at: string;
+}
+
 export interface SourceStatus {
   name: string;
   state: SourceState;
@@ -114,6 +121,8 @@ export interface Document {
   generated_at: string;
   edited_at: string | null;
   run_id: number | null;
+  /** 이 문서를 만든 일지 템플릿 id. 템플릿이 생기기 전 문서는 null. */
+  template: string | null;
 }
 
 export interface DocStatus {
@@ -134,9 +143,21 @@ export interface GenStatus {
   run_id: number;
   date: string;
   kind: string;
+  /** 이번 실행이 쓰는 일지 템플릿 id. */
+  template: string;
   step: string;
   detail: string;
   started: string;
+}
+
+/** 고를 수 있는 일지 템플릿 한 개(설정 칩 · '다시 생성' 메뉴). */
+export interface TemplateInfo {
+  id: string;
+  /** 표준 · 보고용 · 회고용 */
+  name: string;
+  description: string;
+  /** 문서에 들어가는 절 제목(차례대로). */
+  sections: string[];
 }
 
 export interface GenProgress {
@@ -176,6 +197,8 @@ export interface Config {
     max_tokens: number;
     map_reduce_chars: number;
     map_workers: number;
+    /** 기본 일지 템플릿 id — standard | report | retro. */
+    template: string;
   };
   outputs: {
     markdown: { enabled: boolean; dir?: string };
@@ -317,6 +340,8 @@ const tauriApi = {
   feedToday: () => invoke<Feed | null>("feed_today"),
   /** 특정 날짜의 피드. 오늘이면 실시간 스냅샷, 지난 날짜면 저장된 기록(없거나 recollect 면 원본에서 다시 수집). */
   feedFor: (date: string, recollect = false) => invoke<Feed>("feed_for", { date, recollect }),
+  /** [from, to] 안에서 저장된 스냅샷이 있는 날의 지표(날짜 오름차순). 오늘은 실시간 스냅샷이 있으면 그쪽. */
+  dayKpis: (from: string, to: string) => invoke<DayKpis[]>("day_kpis", { from, to }),
   refreshNow: () => invoke<void>("refresh_now"),
   refreshCalendar: () => invoke<void>("refresh_calendar"),
   rescanRepos: () => invoke<void>("rescan_repos"),
@@ -327,11 +352,16 @@ const tauriApi = {
   noteDelete: (id: number) => invoke<boolean>("note_delete", { id }),
   notesFor: (date?: string) => invoke<Note[]>("notes_for", { date }),
 
-  /** 편집된 일지가 있으면 "편집된 일지가 있습니다…" 오류 — 확인 후 overwriteEdited=true 로 다시 부른다. */
-  generateStart: (date?: string, overwriteEdited = false) =>
-    invoke<number>("generate_start", { date, overwriteEdited }),
+  /**
+   * 편집된 일지가 있으면 "편집된 일지가 있습니다…" 오류 — 확인 후 overwriteEdited=true 로 다시 부른다.
+   * template 을 주면 이번 한 번만 그 템플릿으로 만든다(비우면 설정의 기본 템플릿).
+   */
+  generateStart: (date?: string, overwriteEdited = false, template?: string) =>
+    invoke<number>("generate_start", { date, overwriteEdited, template }),
   generateCancel: () => invoke<boolean>("generate_cancel"),
   generateStatus: () => invoke<GenStatus | null>("generate_status"),
+  /** 고를 수 있는 일지 템플릿 목록(바뀌지 않으므로 화면에서 한 번만 읽어 둔다). */
+  templates: () => invoke<TemplateInfo[]>("templates"),
   runsRecent: (limit?: number) => invoke<Run[]>("runs_recent", { limit }),
 
   documentGet: (date: string) => invoke<Document | null>("document_get", { date }),

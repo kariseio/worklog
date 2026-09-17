@@ -103,11 +103,13 @@ pub fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let cfg = app.state::<AppState>().config();
                 let tz = worklog_core::time::get_tz(&cfg.timezone);
                 let today = chrono::Utc::now().with_timezone(&tz).date_naive();
+                // 템플릿은 설정 기본값(None).
                 match crate::generate::start(
                     app,
                     today,
                     worklog_core::store::run_kind::MANUAL,
                     false,
+                    None,
                 ) {
                     Ok(_) => show_main(app),
                     Err(e) => {

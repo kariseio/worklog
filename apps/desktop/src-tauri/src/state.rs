@@ -41,6 +41,8 @@ pub struct GenStatus {
     pub date: NaiveDate,
     /// manual | auto
     pub kind: String,
+    /// 이번 실행에 쓰는 일지 템플릿 id(standard | report | retro).
+    pub template: String,
     pub step: String,
     pub detail: String,
     pub started: DateTime<Utc>,

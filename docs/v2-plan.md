@@ -133,6 +133,13 @@ kv         (key PK, value)                                    -- 마지막 전�
 | 7 배포 | 진행 중 | 서명키 생성(`~/.tauri/worklog.key`, 비밀번호 없음 · 공개키는 `tauri.conf.json` `plugins.updater.pubkey`), `createUpdaterArtifacts: true`, `.github/workflows/release.yml`(태그 `v*` → tauri-action → NSIS + `latest.json` + `.sig`). 남은 것: GitHub secrets(`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`=빈 값) 등록 → 태그 푸시 → 이전 버전에서 업데이트 확인 |
 | 8 컷오버 | 완료 (2026-09-17) | Python v1(패키지·테스트·PyInstaller 스펙·`releases/`)·`pyproject`·`uv.lock`·`config.example.yaml`·`.env.example` 삭제(49 파일), `.gitignore` 정리, README 를 v2 기준으로 재작성. 코어 테스트 121개·프런트 빌드 통과. 남은 것은 7단계의 사용자 몫(secrets 등록 → `v0.2.0` 태그 푸시) |
 
+### 일지 템플릿(2026-09-17 확정, B안)
+- 내장 템플릿 3종을 `template.rs` 에 데이터로 둔다: **표준**(한 줄 요약 · 오늘의 성과 · 결정·요청·할 일 · 프로젝트별 진행 · 시간대별 흐름(압축) · 지표 · 접힌 타임라인), **보고용**(한 줄 요약 · 오늘의 성과 · 결정·요청·할 일 · 지표 한 줄), **회고용**(시간대별 흐름(상세) · 프로젝트별 진행 · 막힌 것·배운 것 · 결정·요청·할 일 · 지표 · 타임라인). "오늘의 성과"와 "결정·요청·할 일"은 모든 템플릿 공통 — 주간 보고가 이 둘만 모으면 되게.
+- 문서 형식: `# 업무일지 YYYY-MM-DD (요일)` → LLM 출력(맨 앞 `> 한 줄 요약`, 이어 `## 섹션`) → 규칙 기반 `## 지표`(+프로젝트별 집중 표) → `<details>` 타임라인(+원본). 제목에 이모지 없음, 할 일은 `- [ ]` 체크박스, 결정은 "결정:", 요청은 "요청(@이름):" 접두. 옛 "⭐ 핵심 성과"는 LLM 의 성과 섹션이 대신한다.
+- 선택: 설정 › AI 요약 `summarizer.template`(기본 표준), 일지 탭 "다시 생성" 캐럿 메뉴로 그날만 다른 템플릿, CLI `--template`, `worklog templates`. 문서에 사용 템플릿을 저장(`documents.template`, 스키마 v3).
+- 사용자 정의 템플릿 파일은 보류(프롬프트 편집 노출 위험). 필요해지면 선언 구조를 파일로 내보내는 방식으로.
+- 후속 관찰(2026-09-16 실데이터 dry-run): 타임라인의 세션 제목에 `<recommended_plugins>…`, "The following is the Codex agent history…" 같은 시스템 주입 문구가 섞이고, 같은 세션이 worktree 별로 3번 잡혀 집중시간이 과다 합산됨 → 제목 정제·중복 제거는 다음 과제.
+
 ### UI 결정 사항(6단계에서 확정)
 - **지난 날짜 타임라인**(2026-09-17): Claude Code 가 기본 30일 뒤 세션 기록을 지우므로, 엔진이 오늘 피드를 SQLite `day_feeds` 에 하루 단위 스냅샷으로 저장(갱신마다, 폭주 시 30초 간격, 날짜 넘김 직전 최종본; 저장본과 합쳐 사라진 항목은 `archived`). `feed_for(date, recollect)` — 오늘은 실시간, 지난 날짜는 저장본(메모는 DB 에서 새로) 또는 재수집 후 병합. 오늘 탭 헤더에 ‹ › · 달력 · 오늘 버튼, 지난 날짜 메모는 `note_add(at)` 로 그 날짜에 기록.
 - **모양 설정**(사용자 요청, B안): 설정 › 모양에서 테마(시스템/라이트/다크) · 글꼴(손글씨 Gaegu/기본 고딕) · 글자 크기(작게/보통/크게). `Config.appearance{theme,font,text_size}`(없으면 기본값, 잘못된 값은 normalize 가 기본값으로). 프런트는 `<html data-theme|data-font|data-size>` 속성 + CSS 토큰으로 적용하고, 글자 크기는 모든 font-size 를 rem 으로 바꿔 루트 크기만 조절한다. `settings_set` 이 `settings:changed`(비밀 제거한 설정)를 모든 창에 보내 빠른 메모 창도 같이 바뀐다. 마지막 모양은 localStorage 에 캐시해 첫 그리기 깜빡임을 막는다.

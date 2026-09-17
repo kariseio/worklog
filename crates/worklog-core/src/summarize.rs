@@ -23,35 +23,11 @@ use std::{
 use crate::{
     config::SummarizerConfig,
     render::{SESSION_SECTION_HEADER, WORKLOG_SENTINEL},
+    template,
 };
 
-pub const SYSTEM_KO: &str = concat!(
-    "너는 하루치 개발 활동 로그(Claude Code 세션 질답 + git 커밋 + 일정 등)를 '업무일지'로 ",
-    "문서화하는 도구다. 목표 — '언제, 어떤 세션에서, 무엇을 다뤘고 무엇을 완료했는가'를 ",
-    "시간·세션 흐름대로 담는 것.\n\n",
-    "규칙:\n",
-    "1. 세션의 '질답 흐름'을 근거로 그날 다룬 주제·요청·결정·완료를 문서화한다. ",
-    "한 세션에서 여러 주제를 다뤘으면 그 주제들을 **모두** 반영한다(첫 주제만 쓰지 말 것).\n",
-    "2. 각 항목은 한 줄, 개조식(명사구·완료형). 장황체·미사여구·불필요한 이모지 금지.\n",
-    "3. 완료·결정된 것을 앞세우되, 중요한 '방향 전환·결정'도 한 줄로 남긴다. ",
-    "단 '~하려고 했다' 식 공허한 과정 나열은 피하고 결과·결정 중심으로.\n",
-    "4. git 커밋을 완료 결과의 1차 근거로 삼는다. 원본 프롬프트·명령어·파일 목록을 그대로 나열하지 마라.\n",
-    "5. 데이터에 없는 것은 지어내지 마라. 제공되지 않은 소스의 섹션은 만들지 마라.\n",
-    "6. '메모' 섹션은 사용자가 직접 남긴 1차 사실(구두 요청·결정·할 일)이다. 반드시 반영하고, ",
-    "요청자(@이름)·요청 내용·후속 조치(커밋/세션으로 이어졌는지)를 한 줄로 명시한다. ",
-    "#할일 메모는 마지막에 '## ✅ 할 일' 로 모은다(없으면 섹션 생략).\n\n",
-    "출력 구조:\n",
-    "## 한 줄 요약 — 오늘을 한 문장으로.\n",
-    "## 🕘 시간대별 흐름 — 시간순으로 자연스러운 블록(오전/점심/오후·저녁 또는 1~3시간)으로 묶어 ",
-    "**굵은 시간대**(예: **09–12시**) 아래 '몇 시경 무엇을 다뤘고 무엇을 했다'를 개조식으로. ",
-    "**회의(📅)는 반드시 해당 시각에 명시**한다.\n",
-    "## 📁 프로젝트별 — 프로젝트로 묶어, 그 프로젝트에서 (여러 세션에 걸쳐) 다룬 주요 주제·진행·",
-    "완료를 개조식으로 정리한다. **굵은 프로젝트명** 아래. 한 프로젝트를 여러 세션에서 다뤘으면 ",
-    "세션을 나누지 말고 합쳐서 정리하되, 필요하면 시간대를 괄호로 덧붙인다(예: (오전 노드제한, 오후 SSO)).\n\n",
-    "전체가 한눈에 들어오게. 문단 쓰지 말고 불릿만 써라."
-);
-
-/// 무거운 날: 세션마다 먼저 이걸로 개별 압축(map) 후, 압축본을 모아 SYSTEM_KO 로 종합(reduce).
+/// 무거운 날: 세션마다 먼저 이걸로 개별 압축(map) 후, 압축본을 모아 템플릿 프롬프트로 종합(reduce).
+/// 템플릿과 무관한 공통 압축 프롬프트다.
 pub const CONDENSE_SYSTEM_KO: &str = concat!(
     "너는 Claude Code 한 세션의 '질답 흐름'을 요약하는 도구다. ",
     "이 세션에서 사용자가 무엇을 요청·논의했고 무엇이 결정·완료됐는지를 시간 흐름을 살려 ",
@@ -374,7 +350,9 @@ impl Summarizer {
     }
 
     fn cancelled(&self) -> bool {
-        self.cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed))
+        self.cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Relaxed))
     }
 
     fn report(&self, step: &str, detail: &str) {
@@ -387,25 +365,60 @@ impl Summarizer {
         if self.cancelled() {
             return None;
         }
-        self.caller.call(system, user, &self.cfg, self.cancel.as_deref())
+        self.caller
+            .call(system, user, &self.cfg, self.cancel.as_deref())
     }
 
-    /// 단일 호출 요약. provider 가 none 이면 None.
+    /// 표준 템플릿으로 단일 호출 요약. provider 가 none 이면 None.
     pub fn summarize(&self, signal: &str, date_iso: &str, availability: &str) -> Option<String> {
+        self.summarize_with(
+            &template::system_prompt(template::DEFAULT_TEMPLATE),
+            signal,
+            date_iso,
+            availability,
+        )
+    }
+
+    /// 단일 호출 요약 — `system` 은 [`crate::template::system_prompt`] 결과.
+    pub fn summarize_with(
+        &self,
+        system: &str,
+        signal: &str,
+        date_iso: &str,
+        availability: &str,
+    ) -> Option<String> {
         if self.provider() == Provider::None {
             tracing::info!("요약기: 사용 안 함 (수집 데이터만 정리)");
             return None;
         }
         self.report("요약", "종합");
-        self.call(SYSTEM_KO, &user_prompt(date_iso, signal, availability))
+        self.call(system, &user_prompt(date_iso, signal, availability))
+    }
+
+    /// 표준 템플릿으로 하루 업무일지 생성. [`summarize_day_with`](Self::summarize_day_with) 의 얇은 껍데기.
+    pub fn summarize_day(
+        &self,
+        signal: &str,
+        date_iso: &str,
+        availability: &str,
+    ) -> Option<String> {
+        self.summarize_day_with(
+            &template::system_prompt(template::DEFAULT_TEMPLATE),
+            signal,
+            date_iso,
+            availability,
+        )
     }
 
     /// 하루 업무일지 생성. 신호가 크면(세션 질답이 많으면) map-reduce 로 안전 처리.
     ///
     /// 가벼우면 신호 그대로 단일 호출. 크면 세션 질답 섹션을 세션별로 쪼개 먼저 개별 요약(병렬)한 뒤,
     /// 압축본으로 신호를 재구성해 종합한다. (컨텍스트 초과·품질 희석 방지)
-    pub fn summarize_day(
+    /// 세션별 압축(map)은 템플릿과 무관한 [`CONDENSE_SYSTEM_KO`] 를 쓰고, 종합(reduce)에만
+    /// 템플릿 프롬프트 `system` 을 쓴다.
+    pub fn summarize_day_with(
         &self,
+        system: &str,
         signal: &str,
         date_iso: &str,
         availability: &str,
@@ -415,11 +428,12 @@ impl Summarizer {
             return None;
         }
         if signal.chars().count() <= self.cfg.map_reduce_chars {
-            return self.summarize(signal, date_iso, availability);
+            return self.summarize_with(system, signal, date_iso, availability);
         }
         let marker = format!("\n{SESSION_SECTION_HEADER}");
         let Some((frame, sess)) = signal.split_once(&marker) else {
-            return self.summarize(signal, date_iso, availability); // 쪼갤 세션 섹션이 없음
+            // 쪼갤 세션 섹션이 없음
+            return self.summarize_with(system, signal, date_iso, availability);
         };
         let blocks: Vec<(String, String)> = sess
             .trim()
@@ -446,7 +460,7 @@ impl Summarizer {
             })
             .collect();
         if blocks.is_empty() {
-            return self.summarize(signal, date_iso, availability);
+            return self.summarize_with(system, signal, date_iso, availability);
         }
 
         tracing::info!(
@@ -475,7 +489,7 @@ impl Summarizer {
             condensed = self.map_condense(&blocks, true);
             new_signal = assemble(&condensed);
         }
-        self.summarize(&new_signal, date_iso, availability)
+        self.summarize_with(system, &new_signal, date_iso, availability)
     }
 
     /// 세션 블록들을 병렬로 개별 압축. `force_all` 이 아니면 작은 세션은 LLM 없이 원문 유지하고
@@ -582,6 +596,11 @@ mod tests {
         }
     }
 
+    /// 표준 템플릿의 종합(reduce) 프롬프트.
+    fn standard() -> String {
+        template::system_prompt("standard")
+    }
+
     fn cfg(chars: usize, workers: usize) -> SummarizerConfig {
         SummarizerConfig {
             provider: "claude_cli".into(),
@@ -617,7 +636,25 @@ mod tests {
         );
         // SAFETY: caller 는 Summarizer 가 살아있는 동안 유효.
         let calls = unsafe { &*ptr }.0.lock().unwrap().clone();
-        assert_eq!(calls, vec![SYSTEM_KO.to_string()]);
+        assert_eq!(calls, vec![standard()]);
+    }
+
+    #[test]
+    fn template_prompt_reaches_the_reduce_call() {
+        let fake = Box::new(Fake(Mutex::new(vec![])));
+        let ptr: *const Fake = &*fake;
+        let s = Summarizer::with_caller(cfg(1500, 2), fake);
+        let want = template::system_prompt("retro");
+        assert_eq!(
+            s.summarize_day_with(&want, "## Git\n- 커밋", "2026-07-08", "")
+                .as_deref(),
+            Some("요약")
+        );
+        // SAFETY: caller 는 Summarizer 가 살아있는 동안 유효.
+        let calls = unsafe { &*ptr }.0.lock().unwrap().clone();
+        assert_eq!(calls, vec![want.clone()]);
+        assert_ne!(want, standard());
+        assert!(want.contains("막힌 것 · 배운 것"));
     }
 
     #[test]
@@ -647,7 +684,7 @@ mod tests {
                 .count(),
             3
         );
-        assert_eq!(calls.last().map(String::as_str), Some(SYSTEM_KO));
+        assert_eq!(calls.last(), Some(&standard()));
     }
 
     #[test]
@@ -670,7 +707,7 @@ mod tests {
                 .count()
                 >= 2
         ); // 청크별 압축 여러 번
-        assert_eq!(calls.last().map(String::as_str), Some(SYSTEM_KO)); // 마지막은 종합
+        assert_eq!(calls.last(), Some(&standard())); // 마지막은 종합
     }
 
     #[test]
@@ -681,6 +718,9 @@ mod tests {
         assert!(user_prompt("d", "s", "가용 X").starts_with("가용 X\n\n"));
         assert_eq!(block_body("### h\nbody\n"), "body");
         assert_eq!(block_body("### h"), "");
-        assert!(SYSTEM_KO.starts_with("너는 하루치 개발 활동")); // meta 세션 판별 서명과 일치해야 함
+        // meta 세션 판별 서명과 일치해야 함 — 어느 템플릿으로 요약해도.
+        for t in template::all() {
+            assert!(template::system_prompt(t.id).starts_with("너는 하루치 개발 활동"));
+        }
     }
 }

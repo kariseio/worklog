@@ -21,6 +21,7 @@ pub mod schedule;
 pub mod service;
 pub mod store;
 pub mod summarize;
+pub mod template;
 pub mod time;
 pub mod watch;
 

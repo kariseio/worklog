@@ -2,7 +2,8 @@
 //!
 //! 결과물은 세 곳에 쓰인다.
 //!   1) 요약기(LLM)의 입력 — 정제 신호(`render_work_signal`) + 시간순 이벤트 + 세션 질답 블록
-//!   2) 최종 문서의 지표 섹션(`render_analysis`)
+//!   2) 최종 문서의 결정론적 조각 — `render_metrics_line` · `render_focus_table` ·
+//!      `render_timeline_list` (조립은 [`crate::template::compose`] 가 한다)
 //!   3) 선택적 부록(수집 데이터 원본, `render_facts`)
 //!
 //! 문자열 하나하나가 v1(Python) 출력과 동일해야 골든 비교가 통과한다.
@@ -303,20 +304,16 @@ fn tok(n: u64) -> String {
     }
 }
 
-/// `Analysis` → 마크다운. LLM 요약 아래에 붙는 사실 지표 섹션.
-pub fn render_analysis(a: &Analysis) -> String {
+/// 하루 지표 한 줄. 문서의 `## 지표` 섹션 본문이자 옛 `render_analysis` 의 첫 줄.
+///
+/// 회의·메모 건수는 [`Analysis::kpis`] 에서 그대로 가져온다(0 이면 표기 자체를 생략).
+/// `tz` 는 시그니처 호환용 — 시각은 이미 `Analysis` 안에서 현지 시간 문자열로 굳어 있다.
+pub fn render_metrics_line(a: &Analysis, _tz: Tz) -> String {
+    metrics_line(a)
+}
+
+fn metrics_line(a: &Analysis) -> String {
     let k = &a.kpis;
-    let mut lines: Vec<String> = Vec::new();
-
-    if !a.highlights.is_empty() {
-        lines.push("## ⭐ 핵심 성과".into());
-        for h in &a.highlights {
-            lines.push(format!("- {h}"));
-        }
-        lines.push(String::new());
-    }
-
-    lines.push("## 📊 오늘 지표".into());
     let span = match (&k.span_start, &k.span_end) {
         (Some(s), Some(e)) => format!(" · 활동 {s}–{e}"),
         _ => String::new(),
@@ -331,7 +328,7 @@ pub fn render_analysis(a: &Analysis) -> String {
     } else {
         String::new()
     };
-    lines.push(format!(
+    format!(
         "- 커밋 **{}** (+{}/−{}) · 저장소 {} · AI **{}세션** · 출력 {}{mtg}{notes}{span}",
         k.commits,
         fmt_thousands(k.insertions),
@@ -339,7 +336,89 @@ pub fn render_analysis(a: &Analysis) -> String {
         k.repos,
         k.sessions,
         tok(k.tokens)
-    ));
+    )
+}
+
+/// 프로젝트별 집중 표(머리글 줄 없이). 프로젝트가 없으면 빈 문자열.
+pub fn render_focus_table(a: &Analysis) -> String {
+    if a.projects.is_empty() {
+        return String::new();
+    }
+    let mut lines: Vec<String> = vec![
+        "| 프로젝트 | 집중시간 | 세션 | 파일 | 커밋 | 변경 |".into(),
+        "|---|--:|--:|--:|--:|--:|".into(),
+    ];
+    for p in &a.projects {
+        let dur = if p.minutes > 0 {
+            human_duration(p.minutes * 60)
+        } else {
+            "–".into()
+        };
+        let chg = if p.commits > 0 {
+            format!(
+                "+{}/−{}",
+                fmt_thousands(p.insertions),
+                fmt_thousands(p.deletions)
+            )
+        } else {
+            "–".into()
+        };
+        lines.push(format!(
+            "| {} | {dur} | {} | {} | {} | {chg} |",
+            p.project, p.sessions, p.files, p.commits
+        ));
+    }
+    lines.join("\n")
+}
+
+/// 타임라인 불릿 목록(머리글 줄 없이). 이벤트가 없으면 빈 문자열.
+///
+/// `tz` 는 시그니처 호환용 — 시각은 이미 `Analysis` 안에서 현지 시간 문자열로 굳어 있다.
+pub fn render_timeline_list(a: &Analysis, _tz: Tz) -> String {
+    timeline_list(a)
+}
+
+fn timeline_list(a: &Analysis) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for e in &a.timeline {
+        let when = match &e.end {
+            Some(end) => format!("{}–{end}", e.start),
+            None => e.start.clone(),
+        };
+        match e.kind.as_str() {
+            "commit" => {
+                let tag = e
+                    .ctype
+                    .as_deref()
+                    .map(|c| format!("[{c}] "))
+                    .unwrap_or_default();
+                lines.push(format!("- `{when}` 💾 {tag}{} · {}", e.label, e.project));
+            }
+            "meeting" => lines.push(format!("- `{when}` 📅 {}", e.label)),
+            "note" => lines.push(format!("- `{when}` 📝 {}", e.label)),
+            _ => lines.push(format!("- `{when}` 🤖 {} · {}", e.label, e.project)),
+        }
+    }
+    lines.join("\n")
+}
+
+/// `Analysis` → 마크다운. v1 형식의 사실 지표 섹션(핵심 성과 · 지표 · 집중 표 · 타임라인).
+///
+/// 문서 본문은 이제 [`crate::template::compose`] 가 만든다. 이 함수는 v1 골든 비교와
+/// 지표만 따로 보고 싶은 곳을 위해 남겨 둔다.
+pub fn render_analysis(a: &Analysis) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    if !a.highlights.is_empty() {
+        lines.push("## ⭐ 핵심 성과".into());
+        for h in &a.highlights {
+            lines.push(format!("- {h}"));
+        }
+        lines.push(String::new());
+    }
+
+    lines.push("## 📊 오늘 지표".into());
+    lines.push(metrics_line(a));
     if !a.commit_types.is_empty() {
         let mut items: Vec<(&String, &u32)> = a.commit_types.iter().collect();
         items.sort_by(|x, y| y.1.cmp(x.1));
@@ -363,54 +442,17 @@ pub fn render_analysis(a: &Analysis) -> String {
     }
     lines.push(String::new());
 
-    if !a.projects.is_empty() {
+    let table = render_focus_table(a);
+    if !table.is_empty() {
         lines.push("### 프로젝트별 집중".into());
-        lines.push("| 프로젝트 | 집중시간 | 세션 | 파일 | 커밋 | 변경 |".into());
-        lines.push("|---|--:|--:|--:|--:|--:|".into());
-        for p in &a.projects {
-            let dur = if p.minutes > 0 {
-                human_duration(p.minutes * 60)
-            } else {
-                "–".into()
-            };
-            let chg = if p.commits > 0 {
-                format!(
-                    "+{}/−{}",
-                    fmt_thousands(p.insertions),
-                    fmt_thousands(p.deletions)
-                )
-            } else {
-                "–".into()
-            };
-            lines.push(format!(
-                "| {} | {dur} | {} | {} | {} | {chg} |",
-                p.project, p.sessions, p.files, p.commits
-            ));
-        }
+        lines.push(table);
         lines.push(String::new());
     }
 
-    if !a.timeline.is_empty() {
+    let timeline = timeline_list(a);
+    if !timeline.is_empty() {
         lines.push("## 🕐 타임라인".into());
-        for e in &a.timeline {
-            let when = match &e.end {
-                Some(end) => format!("{}–{end}", e.start),
-                None => e.start.clone(),
-            };
-            match e.kind.as_str() {
-                "commit" => {
-                    let tag = e
-                        .ctype
-                        .as_deref()
-                        .map(|c| format!("[{c}] "))
-                        .unwrap_or_default();
-                    lines.push(format!("- `{when}` 💾 {tag}{} · {}", e.label, e.project));
-                }
-                "meeting" => lines.push(format!("- `{when}` 📅 {}", e.label)),
-                "note" => lines.push(format!("- `{when}` 📝 {}", e.label)),
-                _ => lines.push(format!("- `{when}` 🤖 {} · {}", e.label, e.project)),
-            }
-        }
+        lines.push(timeline);
         lines.push(String::new());
     }
 
@@ -1023,6 +1065,39 @@ mod tests {
         let empty = DailyData::new(d.target_date, "Asia/Seoul");
         assert!(!render_facts(&empty, tz).contains("메모"));
         assert!(!render_analysis(&analyze(&empty, tz)).contains("메모"));
+    }
+
+    #[test]
+    fn metrics_focus_and_timeline_helpers() {
+        let tz = get_tz("Asia/Seoul");
+        let a = analyze(&crate::analyze::tests::sample(), tz);
+
+        let line = render_metrics_line(&a, tz);
+        assert_eq!(
+            line,
+            "- 커밋 **2** (+403/−3) · 저장소 1 · AI **1세션** · 출력 5K토큰 · 활동 09:00–12:00"
+        );
+        let table = render_focus_table(&a);
+        assert_eq!(
+            table,
+            "| 프로젝트 | 집중시간 | 세션 | 파일 | 커밋 | 변경 |\n|---|--:|--:|--:|--:|--:|\n| repoA | 1h 30m | 1 | 2 | 2 | +403/−3 |"
+        );
+        let tl = render_timeline_list(&a, tz);
+        assert!(tl.starts_with("- `09:00–10:30` 🤖 기능 구현 · repoA\n"));
+        // 머리글은 붙이지 않는다(부르는 쪽이 정한다).
+        assert!(!table.contains('#') && !tl.contains('#'));
+        assert!(!table.ends_with('\n') && !tl.ends_with('\n'));
+        // 옛 render_analysis 와 같은 문자열을 쓴다(한 곳에서만 만든다).
+        let md = render_analysis(&a);
+        assert!(md.contains(&line) && md.contains(&table) && md.contains(&tl));
+
+        let empty = Analysis::default();
+        assert_eq!(
+            render_metrics_line(&empty, tz),
+            "- 커밋 **0** (+0/−0) · 저장소 0 · AI **0세션** · 출력 0토큰"
+        );
+        assert!(render_focus_table(&empty).is_empty());
+        assert!(render_timeline_list(&empty, tz).is_empty());
     }
 
     #[test]

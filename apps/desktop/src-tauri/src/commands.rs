@@ -3,6 +3,8 @@
 //! I/O 가 있는 커맨드는 `async` 로 두어 메인(UI) 스레드를 막지 않는다. 오래 걸리는 네트워크·
 //! 대화상자는 `spawn_blocking` 으로 뺀다. 오류는 사용자에게 그대로 보여줄 한국어 문자열.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter as _, State};
@@ -225,6 +227,73 @@ pub async fn feed_for(
     Ok(merged)
 }
 
+/// 하루치 KPI 한 칸(지난 날짜 타임라인의 막대·요약용).
+#[derive(Debug, Clone, Serialize)]
+pub struct DayKpis {
+    pub date: NaiveDate,
+    pub kpis: feed::FeedKpis,
+    pub stored_at: DateTime<Utc>,
+}
+
+/// 기간(양끝 포함) 안 날짜별 KPI — 스냅샷이 있는 날만, 날짜 오름차순.
+///
+/// 피드 전체를 나르면 무거우므로 저장된 JSON 에서 `kpis` 만 꺼낸다. 깨진 기록은 오류로 만들지
+/// 않고 건너뛴다(그 날짜를 열면 원본에서 다시 수집된다). 메모 수는 스냅샷 이후에도 바뀌므로
+/// 늘 메모 표에서 다시 센다. 오늘은 저장된 스냅샷이 한 박자 늦을 수 있어, 엔진이 들고 있는
+/// 실시간 값이 오늘 것이고 범위 안이면 그것으로 덮어쓴다.
+#[tauri::command]
+pub async fn day_kpis(state: State<'_, AppState>, from: String, to: String) -> Res<Vec<DayKpis>> {
+    let cfg = state.config();
+    let from = parse_date(&cfg, Some(&from))?;
+    let to = parse_date(&cfg, Some(&to))?;
+
+    let (rows, note_counts) = state.with_store(|s| {
+        let rows = s.day_feed_range(from, to).map_err(|e| e.to_string())?;
+        let counts = s.note_counts(from, to).map_err(|e| e.to_string())?;
+        Ok((rows, counts))
+    })?;
+    let note_counts: HashMap<NaiveDate, u32> = note_counts.into_iter().collect();
+
+    let mut out: Vec<DayKpis> = Vec::with_capacity(rows.len());
+    for (date, json, stored_at) in rows {
+        match serde_json::from_str::<Feed>(&json) {
+            Ok(mut f) => {
+                // 메모는 스냅샷 이후에도 고쳐지고 지워지므로 저장된 수 대신 지금 메모 표를 센다.
+                f.kpis.notes = note_counts.get(&date).copied().unwrap_or(0);
+                out.push(DayKpis {
+                    date,
+                    kpis: f.kpis,
+                    stored_at,
+                });
+            }
+            Err(e) => tracing::warn!("{date} 저장된 피드가 깨졌습니다(KPI 건너뜀): {e}"),
+        }
+    }
+
+    // 엔진이 들고 있는 실시간 피드는 "오늘" 것만 최신이다. 어제 열어 둔 채 자정을 넘기면 그
+    // 피드는 지난 날짜가 되어 저장된 스냅샷보다 낡을 수 있으므로, 오늘일 때만 덮어쓴다.
+    let today = Utc::now()
+        .with_timezone(&get_tz(&cfg.timezone))
+        .date_naive();
+    if let Some(live) = state.feed()
+        && live.date == today
+        && today >= from
+        && today <= to
+    {
+        let entry = DayKpis {
+            date: live.date,
+            kpis: live.kpis,
+            stored_at: live.stored_at.unwrap_or(live.built_at),
+        };
+        match out.iter_mut().find(|d| d.date == entry.date) {
+            Some(slot) => *slot = entry,
+            None => out.push(entry),
+        }
+    }
+    out.sort_by_key(|d| d.date);
+    Ok(out)
+}
+
 // ---- 메모 ----------------------------------------------------------------- //
 
 /// 메모 한 줄. `at`(RFC3339)을 주면 그 시각 — 곧 그날짜 — 으로 남긴다(지난 날짜 메모).
@@ -281,12 +350,14 @@ pub async fn notes_for(state: State<'_, AppState>, date: Option<String>) -> Res<
 
 /// 생성 시작. 편집된 일지가 있으면 `overwrite_edited` 없이는 거절한다(오류 문구가
 /// [`generate::EDITED_PREFIX`] 로 시작하므로 화면은 확인 후 true 로 다시 부른다).
+/// `template` 은 이번 한 번만 쓸 템플릿 id(비우면 설정의 `summarizer.template`).
 #[tauri::command]
 pub async fn generate_start(
     app: AppHandle,
     state: State<'_, AppState>,
     date: Option<String>,
     overwrite_edited: Option<bool>,
+    template: Option<String>,
 ) -> Res<i64> {
     let date = parse_date(&state.config(), date.as_deref())?;
     generate::start(
@@ -294,7 +365,14 @@ pub async fn generate_start(
         date,
         run_kind::MANUAL,
         overwrite_edited.unwrap_or(false),
+        template,
     )
+}
+
+/// 고를 수 있는 일지 템플릿 목록(설정 화면 칩 · 일지 화면 '다시 생성' 메뉴).
+#[tauri::command]
+pub fn templates() -> Vec<worklog_core::template::TemplateInfo> {
+    worklog_core::template::all()
 }
 
 #[tauri::command]

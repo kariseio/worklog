@@ -6,6 +6,8 @@
 //!     worklog --no-llm               # LLM 요약 없이 데이터만
 //!     worklog --sources git,claude
 //!     worklog --dry-run              # 파일로 저장하지 않고 콘솔에 출력
+//!     worklog --template retro       # 일지 템플릿 (standard | report | retro)
+//!     worklog templates              # 고를 수 있는 템플릿 목록
 //!     worklog note "#요청 @김팀장 결제 API 타임아웃 늘려달라"   # 메모 한 줄
 //!     worklog notes [--date D]       # 그날 메모 목록
 //!
@@ -14,7 +16,7 @@
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use worklog_core::{config::Config, notes, service, time::get_tz};
+use worklog_core::{config::Config, notes, service, summarize::Summarizer, template, time::get_tz};
 
 #[derive(Parser, Debug)]
 #[command(name = "worklog", version, about = "업무일지 생성기")]
@@ -33,6 +35,9 @@ struct Cli {
     /// 사용할 소스만 콤마로 (git,claude,codex,naverworks)
     #[arg(long)]
     sources: Option<String>,
+    /// 일지 템플릿 (standard | report | retro). 생략하면 설정값
+    #[arg(long)]
+    template: Option<String>,
     /// LLM 요약 생략
     #[arg(long)]
     no_llm: bool,
@@ -54,6 +59,8 @@ enum Cmd {
     },
     /// 그날 메모 목록
     Notes,
+    /// 고를 수 있는 일지 템플릿 목록
+    Templates,
 }
 
 fn main() -> ExitCode {
@@ -81,8 +88,21 @@ fn main() -> ExitCode {
     match &cli.cmd {
         Some(Cmd::Note { text }) => cmd_note(&cfg, &text.join(" ")),
         Some(Cmd::Notes) => cmd_notes(&cfg, date_spec.as_deref()),
+        Some(Cmd::Templates) => cmd_templates(&cfg),
         None => cmd_generate(&cfg, &cli, date_spec.as_deref()),
     }
+}
+
+fn cmd_templates(cfg: &Config) -> ExitCode {
+    let current = template::resolve(&cfg.summarizer.template);
+    for t in template::all() {
+        let mark = if t.id == current { "*" } else { " " };
+        println!("{mark} {:<9} {}  —  {}", t.id, t.name, t.description);
+        // 섹션 제목 자체에 '·' 가 들어가므로(결정 · 요청 · 할 일) 구분자는 '/' 로.
+        println!("    섹션: {}", t.sections.join(" / "));
+    }
+    println!("\n  * 는 현재 설정값. `worklog --template <id>` 로 한 번만 바꿔 쓸 수 있습니다.");
+    ExitCode::SUCCESS
 }
 
 fn cmd_note(cfg: &Config, text: &str) -> ExitCode {
@@ -143,8 +163,24 @@ fn cmd_notes(cfg: &Config, date_spec: Option<&str>) -> ExitCode {
 
 fn cmd_generate(cfg: &Config, cli: &Cli, date_spec: Option<&str>) -> ExitCode {
     let sources: Option<Vec<String>> = cli.sources.as_ref().map(|s| vec![s.clone()]);
-    tracing::info!("업무일지 생성 ({})", cfg.timezone);
-    let result = match service::generate(cfg, date_spec, cli.no_llm, sources.as_deref()) {
+    let tpl = template::resolve(cli.template.as_deref().unwrap_or(&cfg.summarizer.template));
+    if let Some(asked) = &cli.template
+        && !asked.trim().eq_ignore_ascii_case(tpl)
+    {
+        tracing::warn!("알 수 없는 템플릿 {asked:?} → '{tpl}' 로 진행합니다. (worklog templates)");
+    }
+    tracing::info!("업무일지 생성 ({} · 템플릿 {tpl})", cfg.timezone);
+    let summarizer = Summarizer::new(cfg.summarizer.clone());
+    let store = service::open_store();
+    let result = match service::generate_with(
+        cfg,
+        date_spec,
+        cli.no_llm,
+        sources.as_deref(),
+        &summarizer,
+        store.as_ref(),
+        Some(tpl),
+    ) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("{e}");

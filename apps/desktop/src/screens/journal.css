@@ -297,11 +297,16 @@
   min-width: max-content;
 }
 
-/* 글자가 커지면서 240px 사이드바에서 '커밋 · 세션 · 회의 · 메모' 한 줄이 잘렸다 —
-   글씨를 다시 줄이는 대신 두 줄로 넘긴다(가운뎃점 앞뒤 빈칸에서 끊긴다). */
+/* 스냅샷이 있는 날마다 붙는 '커밋 · 세션 · 회의 · 메모' 한 줄. 글자가 커지면 240px 사이드바에서
+   잘렸다 — 글씨를 다시 줄이는 대신 두 줄로 넘긴다(가운뎃점 앞뒤 빈칸에서 끊긴다). */
 .journal-entry-kpis {
   font-size: 0.875rem;
   line-height: 1.35;
+}
+
+/* 아무 활동도 없던 날 — 있는 날보다 한 단계 더 뒤로 물러나게. */
+.journal-entry-kpis.is-empty {
+  opacity: 0.75;
 }
 
 .journal-entry-today {
@@ -360,6 +365,69 @@
 
 .journal-btn-on:hover:not(:disabled) {
   background: color-mix(in srgb, var(--ink) 86%, var(--bg));
+}
+
+/* 이 일지를 만든 템플릿(표준 · 보고용 · 회고용) */
+.journal-tplchip {
+  flex: none;
+}
+
+/* '다시 생성' — 본체 버튼에 템플릿 메뉴를 여는 꺾쇠를 붙인 한 덩어리 */
+.journal-regen {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.journal-regen-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.journal-regen-caret {
+  margin-left: calc(-1 * var(--bw));
+  padding-left: 7px;
+  padding-right: 7px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.journal-tplmenu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 118px;
+  padding: 4px;
+  background: var(--surface);
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--sticker);
+}
+
+.journal-tplitem {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.journal-tplitem:hover {
+  background: var(--bg2);
+}
+
+.journal-tplitem:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* 저장하지 않은 임시 편집본이 남아 있는 날짜 */
