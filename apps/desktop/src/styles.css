@@ -212,56 +212,23 @@ strong {
   font-weight: 700;
 }
 
-/* ---- 손글씨(Gaegu)일 때만: 더 진한 흐린 글씨 · 굵은 획 -------------------------------
-   Gaegu 는 획이 가늘어 같은 회색이 고딕보다 훨씬 흐려 보인다. 흐린 글씨 두 색만 더 진하게
-   되돌리고(잉크 색은 그대로), 획을 아주 얇게 덧그린다.
-   둥근 고딕·기본 고딕은 이미 또렷해 덧그리지 않는다(덧그리면 오히려 뭉갠다).
-   테마 규칙(:root:not([data-theme="light"]) · :root[data-theme="dark"])과 특이성이 같으므로
-   반드시 그 뒤에 두고, 어두운 값은 [data-font="sketch"] 를 덧붙여 한 단계 더 구체적으로 적는다. */
-
-:root[data-font="sketch"] {
-  --muted: #4b4b52;
-  --faint: #83838a;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"])[data-font="sketch"] {
-    --muted: #c0beb6;
-    --faint: #8d8b84;
-  }
-}
-
-:root[data-theme="dark"][data-font="sketch"] {
-  --muted: #c0beb6;
-  --faint: #8d8b84;
-}
-
-/* 획 덧그리기 — 본문은 0.28px, 이미 굵은 글씨는 0.2px(더 두꺼우면 뭉개진다). */
+/* ---- 손글씨(Gaegu)일 때만: 본문을 Gaegu Bold 로 ---------------------------------------
+   Gaegu 는 획이 가늘어 고딕보다 흐려 보인다. 전에는 -webkit-text-stroke 로 획을 덧그렸는데
+   윈도우에서 글자가 번져 보여 모두 걷어냈다. 대신 본문 굵기를 700(Gaegu Bold)으로 올린다.
+   흐린 글씨 색도 따로 진하게 만들지 않고 다른 글꼴과 같은 팔레트 값을 그대로 쓴다. */
 html[data-font="sketch"] body {
-  -webkit-text-stroke: 0.28px currentColor;
+  font-weight: 700;
 }
 
-html[data-font="sketch"] b,
-html[data-font="sketch"] strong,
-html[data-font="sketch"] .screen-title,
-html[data-font="sketch"] .btn-primary,
-html[data-font="sketch"] .chip-on {
-  -webkit-text-stroke: 0.2px currentColor;
+/* 시각·귀띔·자세한 설명 같은 보조 글자는 Regular 로 — 본문이 굵어진 만큼 한 단계 낮춘다. */
+html[data-font="sketch"] .muted,
+html[data-font="sketch"] .small,
+html[data-font="sketch"] .faint {
+  font-weight: 400;
 }
 
-/* 입력 칸의 글자는 덧그리지 않는다 — 커서·선택 영역이 지저분해진다. */
-html[data-font="sketch"] input,
-html[data-font="sketch"] textarea,
-html[data-font="sketch"] select {
-  -webkit-text-stroke: 0;
-}
-
-/* 짧은 이름표는 Gaegu Bold 로 — 한두 낱말은 굵어야 눈에 들어온다. */
-html[data-font="sketch"] .rail-item span,
-html[data-font="sketch"] .btn,
-html[data-font="sketch"] .pill,
+/* 짧은 이름표 두 자리만 다시 굵게 — 위 400 규칙과 특이성이 같으므로 반드시 뒤에 둔다. */
 html[data-font="sketch"] .kpi .small,
-html[data-font="sketch"] .settings-nav,
 html[data-font="sketch"] .field-label {
   font-weight: 700;
 }
