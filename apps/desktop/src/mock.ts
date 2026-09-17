@@ -18,6 +18,7 @@ import type {
   Run,
   SettingsView,
   SinkResult,
+  SummarizerStatus,
   TemplateInfo,
   UpdateInfo,
 } from "./ipc";
@@ -239,7 +240,7 @@ const runs: Run[] = [
 
 const config: Config = {
   timezone: "Asia/Seoul", include_raw_data: false,
-  summarizer: { provider: "auto", model: "claude-opus-4-8", language: "ko", max_tokens: 4000, map_reduce_chars: 20000, map_workers: 4, template: "standard" },
+  summarizer: { provider: "auto", model: "", language: "ko", max_tokens: 4000, map_reduce_chars: 20000, map_workers: 4, template: "standard" },
   outputs: {
     markdown: { enabled: true, dir: "" },
     obsidian: { enabled: true, vault_dir: "D:\\notes\\vault", subdir: "업무일지" },
@@ -259,6 +260,22 @@ const config: Config = {
   appearance: { theme: "system", font: "rounded", text_size: "normal" },
 };
 
+/**
+ * 미리보기에서 'AI 요약 준비 안 됨' 배지를 보려면 주소에 `?ai=off` 를 붙인다.
+ * 기본은 준비됨(ready=true) — claude CLI 가 깔려 있는 흔한 상태를 흉내 낸다.
+ */
+const AI_OFF = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("ai") === "off";
+const MOCK_CLAUDE_CLI = "C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd";
+
+function summarizerStatus(): SummarizerStatus {
+  const configured = config.summarizer.provider;
+  if (configured === "none")
+    return { provider: "none", configured, ready: false, detail: "AI 요약을 쓰지 않도록 해 두었습니다 — 수집한 기록만 정리합니다." };
+  if (AI_OFF)
+    return { provider: "none", configured, ready: false, detail: "PATH 에서 claude 를 찾지 못했고 ANTHROPIC_API_KEY 도 없습니다" };
+  return { provider: "claude_cli", configured, ready: true, detail: `claude CLI: ${MOCK_CLAUDE_CLI}` };
+}
+
 let gen: GenStatus | null = null;
 let genTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -267,7 +284,7 @@ function settingsView(): SettingsView {
     config: structuredClone(config),
     secrets: { naverworks_client_secret: true, naverworks_private_key: true, notion_token: false },
     path: "C:\\Users\\me\\.worklog\\settings.json", status: "loaded", status_detail: null, safe_to_save: true,
-    autostart_enabled: config.automation.autostart, shortcut_error: null, claude_cli: "C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd",
+    autostart_enabled: config.automation.autostart, shortcut_error: null, claude_cli: AI_OFF ? null : MOCK_CLAUDE_CLI,
   };
 }
 
@@ -364,7 +381,7 @@ export const mockApi = {
         const r = runs.find((x) => x.id === id)!;
         Object.assign(r, { finished: new Date().toISOString(), status: "ok", duration_ms: Date.now() - new Date(r.started).getTime() });
         gen = null;
-        emit("generate:done", { run_id: id, date: d, status: "ok", error: null, has_summary: true, sinks: [{ name: "markdown", ok: true, location: `C:\\Users\\me\\Documents\\업무일지\\${d}.md`, error: null }, { name: "obsidian", ok: true, location: `D:\\notes\\vault\\업무일지\\${d}.md`, error: null }] });
+        emit("generate:done", { run_id: id, date: d, status: "ok", error: null, has_summary: !AI_OFF, sinks: [{ name: "markdown", ok: true, location: `C:\\Users\\me\\Documents\\업무일지\\${d}.md`, error: null }, { name: "obsidian", ok: true, location: `D:\\notes\\vault\\업무일지\\${d}.md`, error: null }] });
       }
     };
     genTimer = setTimeout(tick, 300);
@@ -408,6 +425,7 @@ export const mockApi = {
     emit("settings:changed", structuredClone(config));
     return settingsView();
   },
+  summarizerStatus: async (): Promise<SummarizerStatus> => summarizerStatus(),
   testConnection: async (kind: string): Promise<Check> => {
     await wait(700);
     return kind === "notion" ? { ok: false, message: "Notion 토큰을 입력하세요." } : { ok: true, message: "연결됨 · 액세스 토큰 발급 성공" };

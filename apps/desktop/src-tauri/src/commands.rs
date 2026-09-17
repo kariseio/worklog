@@ -614,6 +614,90 @@ pub async fn test_connection(
     Ok(Check { ok, message })
 }
 
+// ---- 요약기 준비 상태 --------------------------------------------------------- //
+
+/// '지금 일지 만들기' 옆 배지에 쓰는 요약기 준비 상태.
+///
+/// 생성을 눌러 4분을 기다린 뒤에야 "요약이 없네" 를 알게 되는 일을 막기 위해, 누르기 전에
+/// 미리 알린다(원칙 5 — 사전 경고).
+#[derive(Debug, Clone, Serialize)]
+pub struct SummarizerStatus {
+    /// 실제로 쓰이게 될 provider — claude_cli | anthropic_api | none
+    pub provider: String,
+    /// 설정에 적힌 값 그대로 — auto | claude_cli | anthropic_api | none | (알 수 없는 값)
+    pub configured: String,
+    /// 지금 이대로 AI 요약을 만들 수 있는가. false 면 문서는 만들어지되 요약이 빠진다(부분 성공).
+    pub ready: bool,
+    /// 사람이 읽는 한 줄 이유(배지 툴팁 · 메뉴 머리말).
+    pub detail: String,
+}
+
+/// 설정값 + 환경(`claude` CLI 경로 · `ANTHROPIC_API_KEY` 유무)만으로 준비 상태를 판정한다.
+///
+/// [`worklog_core::summarize::resolve_provider`] 와 같은 규칙이되, 환경을 인자로 받아
+/// 테스트가 가능하고 "왜 안 되는지" 를 한 줄로 설명한다.
+fn summarizer_status_of(configured: &str, cli: Option<&str>, api_key: bool) -> SummarizerStatus {
+    const NO_CLI: &str =
+        "PATH 에서 claude 를 찾지 못했습니다. Claude Code 를 설치하거나 API 키로 바꾸세요.";
+    const NO_KEY: &str = "ANTHROPIC_API_KEY 환경 변수가 없습니다.";
+    let configured = configured.trim();
+    let with_cli = |p: &str| ("claude_cli", true, format!("claude CLI: {p}"));
+    let with_api = (
+        "anthropic_api",
+        true,
+        "Anthropic API · ANTHROPIC_API_KEY 로 요약합니다.".to_string(),
+    );
+    let (provider, ready, detail) = match configured {
+        "auto" => match (cli, api_key) {
+            (Some(p), _) => with_cli(p),
+            (None, true) => with_api,
+            (None, false) => (
+                "none",
+                false,
+                "PATH 에서 claude 를 찾지 못했고 ANTHROPIC_API_KEY 도 없습니다".to_string(),
+            ),
+        },
+        "claude_cli" => match cli {
+            Some(p) => with_cli(p),
+            None => ("claude_cli", false, NO_CLI.to_string()),
+        },
+        "anthropic_api" => {
+            if api_key {
+                with_api
+            } else {
+                ("anthropic_api", false, NO_KEY.to_string())
+            }
+        }
+        "none" => (
+            "none",
+            false,
+            "AI 요약을 쓰지 않도록 해 두었습니다 — 수집한 기록만 정리합니다.".to_string(),
+        ),
+        other => (
+            "none",
+            false,
+            format!(
+                "알 수 없는 요약 provider {other:?} — auto · claude_cli · anthropic_api · none 중에서 고르세요."
+            ),
+        ),
+    };
+    SummarizerStatus {
+        provider: provider.to_string(),
+        configured: configured.to_string(),
+        ready,
+        detail,
+    }
+}
+
+/// 요약기가 지금 쓸 수 있는 상태인지(화면 배지용). 네트워크는 건드리지 않는다.
+#[tauri::command]
+pub async fn summarizer_status(state: State<'_, AppState>) -> Res<SummarizerStatus> {
+    let provider = state.config().summarizer.provider;
+    let cli = claude_exe().map(|p| p.display().to_string());
+    let api_key = std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|v| !v.is_empty());
+    Ok(summarizer_status_of(&provider, cli.as_deref(), api_key))
+}
+
 /// NaverWorks 캘린더 목록(설정 화면 다중 선택용).
 #[tauri::command]
 pub async fn naverworks_calendars(
@@ -757,4 +841,75 @@ pub fn quick_hide(app: AppHandle) {
 #[tauri::command]
 pub fn app_quit(app: AppHandle) {
     app.exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use worklog_core::summarize::{Provider, resolve_provider};
+
+    /// PATH 에 claude 가 없고 ANTHROPIC_API_KEY 도 없는 환경 → '준비 안 됨' + 이유 한 줄.
+    #[test]
+    fn auto_without_cli_or_key_is_not_ready() {
+        let s = summarizer_status_of("auto", None, false);
+        assert_eq!(s.provider, "none");
+        assert_eq!(s.configured, "auto");
+        assert!(!s.ready);
+        assert_eq!(
+            s.detail,
+            "PATH 에서 claude 를 찾지 못했고 ANTHROPIC_API_KEY 도 없습니다"
+        );
+    }
+
+    #[test]
+    fn auto_prefers_cli_then_api_key() {
+        let cli = summarizer_status_of("auto", Some(r"C:\npm\claude.cmd"), true);
+        assert_eq!((cli.provider.as_str(), cli.ready), ("claude_cli", true));
+        assert_eq!(cli.detail, r"claude CLI: C:\npm\claude.cmd");
+        let api = summarizer_status_of("auto", None, true);
+        assert_eq!((api.provider.as_str(), api.ready), ("anthropic_api", true));
+    }
+
+    /// 콕 집어 고른 provider 는 되돌리지 않는다 — 준비만 안 된 상태로 알린다.
+    #[test]
+    fn explicit_provider_reports_its_own_gap() {
+        let cli = summarizer_status_of("claude_cli", None, true);
+        assert_eq!((cli.provider.as_str(), cli.ready), ("claude_cli", false));
+        assert!(cli.detail.contains("PATH 에서 claude 를 찾지 못했습니다"));
+        let api = summarizer_status_of("anthropic_api", Some("claude"), false);
+        assert_eq!((api.provider.as_str(), api.ready), ("anthropic_api", false));
+        assert!(api.detail.contains("ANTHROPIC_API_KEY"));
+    }
+
+    /// 꺼 둔 것(none)과 오타는 둘 다 요약 없음이지만 문구가 다르다 — 화면이 배지를 갈라 쓴다.
+    #[test]
+    fn none_and_unknown_are_distinguished() {
+        let off = summarizer_status_of(" none ", Some("claude"), true);
+        assert_eq!((off.provider.as_str(), off.configured.as_str()), ("none", "none"));
+        assert!(!off.ready);
+        assert!(off.detail.contains("쓰지 않도록"));
+        let bad = summarizer_status_of("claude", Some("claude"), true);
+        assert_eq!(bad.provider, "none");
+        assert!(bad.detail.contains("알 수 없는 요약 provider"));
+    }
+
+    /// 코어의 해석 규칙과 어긋나지 않게(환경과 무관한 값만 확인).
+    #[test]
+    fn matches_core_resolution() {
+        for (cfg, want) in [
+            ("claude_cli", Provider::ClaudeCli),
+            ("anthropic_api", Provider::AnthropicApi),
+            ("none", Provider::None),
+            ("claude", Provider::None),
+        ] {
+            let got = summarizer_status_of(cfg, Some("claude"), true);
+            let core = match resolve_provider(cfg) {
+                Provider::ClaudeCli => "claude_cli",
+                Provider::AnthropicApi => "anthropic_api",
+                Provider::None => "none",
+            };
+            assert_eq!(resolve_provider(cfg), want);
+            assert_eq!(got.provider, core, "{cfg}");
+        }
+    }
 }

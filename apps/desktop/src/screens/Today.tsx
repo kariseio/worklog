@@ -21,6 +21,7 @@ import {
   setViewDate,
   settings,
   startGenerate,
+  summarizer,
   toast,
   viewDate,
   viewError,
@@ -35,6 +36,8 @@ const STATE_LABEL: Record<string, string> = { skipped: "건너뜀", error: "오�
 const AGENT_LABEL: Record<string, string> = { claude: "Claude", codex: "Codex" };
 const STEPS = ["수집", "요약", "저장"] as const;
 const TAGS = ["요청", "결정", "할일", "회의"];
+/** 'claude CLI 설치 안내 복사' 가 클립보드에 넣는 한 줄. */
+const CLI_INSTALL_GUIDE = "npm install -g @anthropic-ai/claude-code 후 claude 로그인";
 /** 저장 단계 라벨에 쓰는 출력 이름(설정 순서대로). */
 const OUTPUT_LABEL: [keyof Config["outputs"], string][] = [
   ["markdown", "로컬 md"],
@@ -136,6 +139,45 @@ export default function Today() {
   const generateHere = async () => {
     const id = await startGenerate(isToday() ? undefined : (viewDate() ?? undefined));
     if (id != null) startedHere.add(id);
+  };
+
+  // AI 요약 준비 상태 — 누르기 전에 미리 알린다(4분 기다린 뒤 "요약이 없네" 를 막는다).
+  // configured === "none" 은 사용자가 꺼 둔 것(조용한 안내), 그 밖에 준비가 안 된 것은 경고 + 선택지.
+  const ai = () => summarizer();
+  const aiOff = () => ai()?.configured === "none";
+  const aiNotReady = () => {
+    const s = ai();
+    return !!s && s.configured !== "none" && !s.ready;
+  };
+  const [aiMenu, setAiMenu] = createSignal(false);
+  // 메뉴가 열려 있는 동안만 바깥 클릭·Esc 를 듣는다. 준비가 갖춰지면 스스로 닫힌다.
+  createEffect(() => {
+    if (!aiMenu()) return;
+    if (!aiNotReady()) {
+      setAiMenu(false);
+      return;
+    }
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target as Element | null)?.closest?.(".today-aiwrap")) setAiMenu(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAiMenu(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onEsc);
+    onCleanup(() => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onEsc);
+    });
+  });
+
+  const copyCliGuide = async () => {
+    try {
+      await navigator.clipboard.writeText(CLI_INSTALL_GUIDE);
+      toast("설치 안내를 복사했습니다", "ok");
+    } catch (e) {
+      toast(errText(e), "error");
+    }
   };
 
   // 생성 완료: 여기서 시작한 오늘 일지이고 입력 중인 메모가 없으면 '일지'로 이동, 아니면 10초 안내 띠.
@@ -363,6 +405,72 @@ export default function Today() {
               <span class="today-sched-text">{sched().text}</span>
             </Pill>
           </button>
+        </Show>
+        <Show when={aiOff()}>
+          <button
+            type="button"
+            class="today-ai"
+            title={`${ai()?.detail ?? ""} (누르면 설정 · AI 요약)`}
+            onClick={() => gotoSettings("summary")}
+          >
+            <Pill tone="muted">AI 요약 꺼짐</Pill>
+          </button>
+        </Show>
+        <Show when={aiNotReady()}>
+          <div class="today-aiwrap">
+            <button
+              type="button"
+              class="today-ai"
+              title={ai()?.detail}
+              aria-haspopup="menu"
+              aria-expanded={aiMenu()}
+              onClick={() => setAiMenu((v) => !v)}
+            >
+              <Pill tone="warn">
+                <Icon name="alert" size={13} />
+                <span>AI 요약 준비 안 됨</span>
+              </Pill>
+            </button>
+            <Show when={aiMenu()}>
+              <div class="today-aimenu" role="menu">
+                <p class="today-aidetail small muted">{ai()?.detail}</p>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="today-aiitem"
+                  onClick={() => {
+                    setAiMenu(false);
+                    gotoSettings("summary");
+                  }}
+                >
+                  설정 열기
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="today-aiitem"
+                  onClick={() => {
+                    setAiMenu(false);
+                    void copyCliGuide();
+                  }}
+                >
+                  claude CLI 설치 안내 복사
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="today-aiitem"
+                  disabled={!!generating()}
+                  onClick={() => {
+                    setAiMenu(false);
+                    void generateHere();
+                  }}
+                >
+                  요약 없이 만들기
+                </button>
+              </div>
+            </Show>
+          </div>
         </Show>
         <Show
           when={generating()}

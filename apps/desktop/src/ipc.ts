@@ -301,6 +301,18 @@ export interface SettingsView {
   claude_cli: string | null;
 }
 
+/** 요약기 준비 상태 — '지금 일지 만들기' 옆 배지(누르기 전에 미리 알리는 경고). */
+export interface SummarizerStatus {
+  /** 실제로 쓰이게 될 provider — claude_cli | anthropic_api | none */
+  provider: string;
+  /** 설정에 적힌 값 그대로 — auto | claude_cli | anthropic_api | none | (알 수 없는 값) */
+  configured: string;
+  /** false 면 문서는 만들어지되 AI 요약이 빠진다(부분 성공). */
+  ready: boolean;
+  /** 사람이 읽는 한 줄 이유. */
+  detail: string;
+}
+
 export interface Check {
   ok: boolean;
   message: string;
@@ -373,6 +385,8 @@ const tauriApi = {
 
   settingsGet: () => invoke<SettingsView>("settings_get"),
   settingsSet: (config: Config) => invoke<SettingsView>("settings_set", { config }),
+  /** 요약기가 지금 쓸 수 있는 상태인지(배지·메뉴용). */
+  summarizerStatus: () => invoke<SummarizerStatus>("summarizer_status"),
   testConnection: (kind: string, config?: Config) =>
     invoke<Check>("test_connection", { kind, config }),
   naverworksCalendars: (config?: Config) =>

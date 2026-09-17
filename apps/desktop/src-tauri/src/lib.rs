@@ -123,6 +123,7 @@ pub fn run() {
             commands::settings_get,
             commands::settings_set,
             commands::test_connection,
+            commands::summarizer_status,
             commands::naverworks_calendars,
             commands::open_path,
             commands::open_url,

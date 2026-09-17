@@ -15,6 +15,7 @@ import {
   type GenStatus,
   type Reminder,
   type SettingsView,
+  type SummarizerStatus,
   type UpdateInfo,
 } from "./ipc";
 
@@ -51,6 +52,8 @@ export const [reminder, setReminder] = createSignal<Reminder | null>(null);
 export const [update, setUpdate] = createSignal<UpdateInfo | null>(null);
 export const [info, setInfo] = createSignal<AppInfo | null>(null);
 export const [settings, setSettings] = createSignal<SettingsView | null>(null);
+/** 요약기 준비 상태 — 시작할 때와 설정이 바뀔 때만 다시 읽는다(오늘 화면 배지). */
+export const [summarizer, setSummarizer] = createSignal<SummarizerStatus | null>(null);
 
 export interface Toast {
   id: number;
@@ -220,6 +223,18 @@ export async function loadSettings(): Promise<SettingsView | null> {
   }
 }
 
+/** 요약기 준비 상태를 읽는다. 배지 하나 때문에 토스트를 띄우지는 않는다(조용히 실패). */
+export async function loadSummarizerStatus(): Promise<SummarizerStatus | null> {
+  try {
+    const s = await api.summarizerStatus();
+    setSummarizer(s);
+    return s;
+  } catch (e) {
+    console.warn("요약기 준비 상태 확인 실패", e);
+    return null;
+  }
+}
+
 /** 설정 저장(변경 즉시). 실패하면 토스트 후 이전 값을 다시 읽는다. */
 export async function saveSettings(cfg: Config): Promise<SettingsView | null> {
   try {
@@ -269,7 +284,12 @@ export function initStore(): () => void {
       on("generate:done", (d) => {
         setGenerating(null);
         setLastDone(d);
-        if (d.status === "ok") {
+        if (d.status === "ok" && !d.has_summary) {
+          // 문서는 남았지만 AI 요약이 빠진 상태 — 성공으로 뭉뚱그리지 않고 부분 성공으로 알린다.
+          toast(`${d.date} 일지를 저장했습니다 · AI 요약 없음(부분 성공)${d.error ? ` · ${d.error}` : ""}`, "info", {
+            action: { label: "이유 보기", run: () => gotoSettings("summary") },
+          });
+        } else if (d.status === "ok") {
           toast(`${d.date} 일지를 만들었습니다${d.error ? ` · ${d.error}` : ""}`, d.error ? "info" : "ok", {
             action: { label: "일지 보기", run: () => gotoJournal(d.date) },
           });
@@ -286,6 +306,8 @@ export function initStore(): () => void {
       on("settings:changed", (cfg) => {
         setSettings((prev) => (prev ? { ...prev, config: cfg } : prev));
         applyAppearance(cfg.appearance);
+        // provider 를 바꿨을 수 있다 — 배지를 바로 맞춘다.
+        void loadSummarizerStatus();
       }),
     ]);
     if (disposed) {
@@ -304,6 +326,7 @@ export function initStore(): () => void {
       }
       const sv = await loadSettings();
       if (sv) applyAppearance(sv.config.appearance);
+      await loadSummarizerStatus();
     } catch (e) {
       toast(errText(e), "error");
     }
