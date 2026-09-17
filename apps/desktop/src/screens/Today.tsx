@@ -467,7 +467,7 @@ function EventRow(props: { item: FeedItem }) {
         <div class="today-ev-body">
           <div class="today-ev-title">
             <b>{KIND_LABEL[props.item.kind] ?? props.item.kind}</b>
-            <Show when={props.item.project}>{(p) => <> · {p()}</>}</Show>
+            <Show when={props.item.project}>{(p) => <> · <b>{p()}</b></>}</Show>
             {" — "}
             {props.item.label}
           </div>

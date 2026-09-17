@@ -99,7 +99,7 @@
 }
 
 .journal-cal-wd {
-  font-size: 0.75rem;
+  font-size: 0.875rem;
   color: var(--muted);
   text-align: center;
   margin-bottom: -4px;
@@ -296,11 +296,11 @@
   min-width: max-content;
 }
 
+/* 글자가 커지면서 240px 사이드바에서 '커밋 · 세션 · 회의 · 메모' 한 줄이 잘렸다 —
+   글씨를 다시 줄이는 대신 두 줄로 넘긴다(가운뎃점 앞뒤 빈칸에서 끊긴다). */
 .journal-entry-kpis {
-  font-size: 0.8125rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 0.875rem;
+  line-height: 1.35;
 }
 
 .journal-entry-today {
@@ -316,7 +316,7 @@
 }
 
 .journal-entry-snip {
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;

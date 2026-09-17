@@ -324,7 +324,7 @@
 .settings-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
 }
 
 .settings-table th,
@@ -338,7 +338,7 @@
 .settings-table th {
   color: var(--muted);
   font-weight: 400;
-  font-size: 0.8125rem;
+  font-size: 0.9375rem;
 }
 
 .settings-table tr:last-child td {

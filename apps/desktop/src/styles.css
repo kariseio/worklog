@@ -47,8 +47,9 @@
   --sticker: 2px 2px 0 var(--line);
   --font: "Gaegu", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
   --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-  /* 글자 크기는 이 한 값만 바꾼다 — 화면의 글자 크기는 모두 rem 이라 같이 따라온다. */
-  --root-size: 16px;
+  /* 글자 크기는 이 한 값만 바꾼다 — 화면의 글자 크기는 모두 rem 이라 같이 따라온다.
+     Gaegu 는 같은 px 에서 눈에 보이는 글자가 작아(x-height 가 낮다) 뿌리 크기를 한 단계 올린다. */
+  --root-size: 17.5px;
   font-family: var(--font);
   line-height: 1.35;
 }
@@ -116,7 +117,7 @@
 
 /* 네 조합(글꼴 × 작게/크게)을 그대로 적는다 — 글꼴+크기가 함께 걸린 규칙이 더 구체적이라 이긴다. */
 :root[data-size="small"] {
-  --root-size: 14.5px;
+  --root-size: 16px;
 }
 
 :root[data-font="plain"][data-size="small"] {
@@ -124,7 +125,7 @@
 }
 
 :root[data-size="large"] {
-  --root-size: 18px;
+  --root-size: 19.5px;
 }
 
 :root[data-font="plain"][data-size="large"] {
@@ -133,6 +134,59 @@
 
 html {
   font-size: var(--root-size);
+}
+
+/* ---- 손글씨(Gaegu)일 때만: 더 진한 흐린 글씨 · 굵은 획 -------------------------------
+   Gaegu 는 획이 가늘어 같은 회색이 고딕보다 훨씬 흐려 보인다. 흐린 글씨 두 색만 더 진하게
+   되돌리고(잉크 색은 그대로), 획을 아주 얇게 덧그린다.
+   테마 규칙(:root:not([data-theme="light"]) · :root[data-theme="dark"])과 특이성이 같으므로
+   반드시 그 뒤에 두고, 어두운 값은 :not([data-font="plain"]) 를 덧붙여 한 단계 더 구체적으로 적는다. */
+
+:root:not([data-font="plain"]) {
+  --muted: #4b4b52;
+  --faint: #83838a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-font="plain"]) {
+    --muted: #c0beb6;
+    --faint: #8d8b84;
+  }
+}
+
+:root[data-theme="dark"]:not([data-font="plain"]) {
+  --muted: #c0beb6;
+  --faint: #8d8b84;
+}
+
+/* 획 덧그리기 — 본문은 0.28px, 이미 굵은 글씨는 0.2px(더 두꺼우면 뭉개진다). */
+html:not([data-font="plain"]) body {
+  -webkit-text-stroke: 0.28px currentColor;
+}
+
+html:not([data-font="plain"]) b,
+html:not([data-font="plain"]) strong,
+html:not([data-font="plain"]) .screen-title,
+html:not([data-font="plain"]) .btn-primary,
+html:not([data-font="plain"]) .chip-on {
+  -webkit-text-stroke: 0.2px currentColor;
+}
+
+/* 입력 칸의 글자는 덧그리지 않는다 — 커서·선택 영역이 지저분해진다. */
+html:not([data-font="plain"]) input,
+html:not([data-font="plain"]) textarea,
+html:not([data-font="plain"]) select {
+  -webkit-text-stroke: 0;
+}
+
+/* 짧은 이름표는 Gaegu Bold 로 — 한두 낱말은 굵어야 눈에 들어온다. */
+html:not([data-font="plain"]) .rail-item span,
+html:not([data-font="plain"]) .btn,
+html:not([data-font="plain"]) .pill,
+html:not([data-font="plain"]) .kpi .small,
+html:not([data-font="plain"]) .settings-nav,
+html:not([data-font="plain"]) .field-label {
+  font-weight: 700;
 }
 
 * {
@@ -179,7 +233,7 @@ a {
 }
 
 .small {
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
 }
 
 .mono {
@@ -272,7 +326,7 @@ a {
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   line-height: 1.2;
 }
 
@@ -426,9 +480,9 @@ a {
   gap: 4px;
   border: var(--bw) solid var(--line);
   border-radius: var(--radius-pill);
-  padding: 0 9px;
-  font-size: 0.8125rem;
-  line-height: 1.375rem;
+  padding: 0 10px;
+  font-size: 0.875rem;
+  line-height: 1.5rem;
   background: var(--surface);
   color: var(--ink);
   white-space: nowrap;
@@ -541,7 +595,7 @@ a {
 }
 
 .kpi .small {
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
 }
 
 .kpi-memo {
@@ -775,7 +829,7 @@ a {
 
 .doc {
   user-select: text;
-  font-size: 1rem;
+  font-size: 1.0625rem;
   line-height: 1.5;
 }
 
@@ -786,7 +840,7 @@ a {
 }
 
 .doc h2 {
-  font-size: 1.0625rem;
+  font-size: 1.125rem;
   font-weight: 700;
   margin: 14px 0 6px;
   padding-bottom: 2px;
@@ -816,6 +870,7 @@ a {
 
 .doc li {
   margin: 2px 0;
+  line-height: 1.5;
 }
 
 .doc blockquote {
