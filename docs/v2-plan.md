@@ -133,6 +133,7 @@ kv         (key PK, value)                                    -- 마지막 전�
 | 7 배포 | 진행 중 | 서명키 생성(`~/.tauri/worklog.key`, 비밀번호 없음 · 공개키는 `tauri.conf.json` `plugins.updater.pubkey`), `createUpdaterArtifacts: true`, `.github/workflows/release.yml`(태그 `v*` → tauri-action → NSIS + `latest.json` + `.sig`). 남은 것: GitHub secrets(`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`=빈 값) 등록 → 태그 푸시 → 이전 버전에서 업데이트 확인 |
 
 ### UI 결정 사항(6단계에서 확정)
+- **모양 설정**(사용자 요청, B안): 설정 › 모양에서 테마(시스템/라이트/다크) · 글꼴(손글씨 Gaegu/기본 고딕) · 글자 크기(작게/보통/크게). `Config.appearance{theme,font,text_size}`(없으면 기본값, 잘못된 값은 normalize 가 기본값으로). 프런트는 `<html data-theme|data-font|data-size>` 속성 + CSS 토큰으로 적용하고, 글자 크기는 모든 font-size 를 rem 으로 바꿔 루트 크기만 조절한다. `settings_set` 이 `settings:changed`(비밀 제거한 설정)를 모든 창에 보내 빠른 메모 창도 같이 바뀐다. 마지막 모양은 localStorage 에 캐시해 첫 그리기 깜빡임을 막는다.
 - **룩**: 와이어프레임의 손그림 종이 스케치를 그대로 쓴다(사용자 요청 "와이어프레임처럼 귀엽게"). Gaegu 손글씨 글꼴(SIL OFL, `src/assets/fonts` 번들, 16px), 모든 카드·버튼·입력·칩은 1.5px 잉크 테두리, 점선 구분선, 번지는 그림자 없음. 메모는 노란 스티커(2px 오프셋 그림자 + 살짝 기울임). 다크 모드는 같은 토큰으로 크림색 잉크선.
 - **미리보기 백엔드**: `ipc.ts` 는 `window.__TAURI_INTERNALS__` 가 없으면 `mock.ts`(가짜 데이터·타이머 생성)를 쓴다. `pnpm dev`(포트 1420) 로 브라우저에서 화면을 확인·리뷰할 수 있다. 실제 백엔드처럼 매번 새 객체를 돌려줘야 한다(같은 객체를 돌려주면 Solid resource 가 갱신을 못 알아챈다).
 - **상태**: `store.ts` 하나. 리스너를 먼저 걸고 스냅샷을 받는다(사이에 온 이벤트 유실 방지). `generate:progress` 가 모르는 run 이면 `generate_status` 로 실제 날짜를 받아 온다.

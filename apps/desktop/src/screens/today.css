@@ -4,7 +4,7 @@
 
 .today-header-date {
   color: var(--muted);
-  font-size: 16px;
+  font-size: 1rem;
   white-space: nowrap;
 }
 
@@ -117,7 +117,7 @@
 }
 
 .today-gen-title {
-  font-size: 18px;
+  font-size: 1.125rem;
 }
 
 .today-gen-steps {
@@ -134,7 +134,7 @@
   border: var(--bw) solid var(--line);
   border-radius: var(--radius-pill);
   padding: 2px 10px;
-  font-size: 14px;
+  font-size: 0.875rem;
   background: var(--surface);
   white-space: nowrap;
 }
@@ -206,7 +206,7 @@
   background: transparent;
   padding: 0 4px;
   color: var(--warn);
-  font-size: 14px;
+  font-size: 0.875rem;
   display: inline-flex;
   gap: 4px;
   align-items: center;
@@ -223,7 +223,7 @@
   margin: 0;
   padding: 2px 0 0 18px;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 0.875rem;
   user-select: text;
 }
 
@@ -259,7 +259,7 @@
   align-items: center;
   gap: 10px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
   margin-top: 4px;
 }
 
@@ -281,7 +281,7 @@
 .today-tm {
   width: 48px;
   flex: none;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--muted);
   padding-top: 7px;
   text-align: right;
@@ -404,7 +404,7 @@
 }
 
 .today-memo-hint {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: color-mix(in srgb, var(--memo-ink) 68%, transparent);
   margin-right: auto;
 }

@@ -40,7 +40,7 @@
   border-radius: var(--radius);
   background: transparent;
   color: var(--ink);
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.2;
   text-align: left;
   transition: background 0.12s;
@@ -82,7 +82,7 @@
 .settings-path {
   display: block;
   margin-top: 2px;
-  font-size: 12px;
+  font-size: 0.75rem;
   word-break: break-all;
   user-select: text;
 }
@@ -155,7 +155,7 @@
 }
 
 .settings-sec-title {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 700;
   color: var(--ink);
 }
@@ -207,7 +207,7 @@
 
 .settings-secret {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .settings-secret-area {
@@ -218,6 +218,14 @@
 
 .settings-secret-area:focus {
   -webkit-text-security: none;
+}
+
+/* 글꼴 미리보기 한 줄 — 고른 글꼴로 실제 문장을 보여 준다. */
+.settings-preview {
+  padding: 8px 12px;
+  max-width: 420px;
+  user-select: text;
+  overflow-wrap: anywhere;
 }
 
 .field-body > .settings-pathrow {
@@ -316,7 +324,7 @@
 .settings-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .settings-table th,
@@ -330,7 +338,7 @@
 .settings-table th {
   color: var(--muted);
   font-weight: 400;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .settings-table tr:last-child td {

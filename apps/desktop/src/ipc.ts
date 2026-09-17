@@ -239,6 +239,12 @@ export interface Config {
     notify: boolean;
     global_shortcut: string;
   };
+  /** 화면 모양 — 테마 · 글꼴 · 글자 크기. 값은 `appearance.ts` 가 <html> 의 data-* 로 옮긴다. */
+  appearance: {
+    theme: "system" | "light" | "dark";
+    font: "sketch" | "plain";
+    text_size: "small" | "normal" | "large";
+  };
 }
 
 export interface CalendarInfo {
@@ -356,6 +362,8 @@ export interface Events {
   "update:available": UpdateInfo;
   "engine:error": string;
   "quick:show": null;
+  /** settings_set 이 저장한 뒤 모든 창에 알리는 설정(비밀 값은 지워진 채). */
+  "settings:changed": Config;
 }
 
 export type Api = typeof tauriApi;

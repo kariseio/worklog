@@ -1,5 +1,6 @@
 import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { applyAppearance } from "./appearance";
 import { Chip, Icon } from "./components/ui";
 import { api, on } from "./ipc";
 import { errText } from "./store";
@@ -26,17 +27,21 @@ export default function Quick() {
 
   onMount(() => {
     // onCleanup 은 await 전에(동기적으로) 걸어야 Solid 가 소유자에 붙인다.
-    let un: UnlistenFn | null = null;
+    const uns: UnlistenFn[] = [];
     let disposed = false;
     onCleanup(() => {
       disposed = true;
-      un?.();
+      uns.forEach((u) => u());
     });
-    focus();
-    void on("quick:show", focus).then((u) => {
+    const keep = (u: UnlistenFn) => {
       if (disposed) u();
-      else un = u;
-    });
+      else uns.push(u);
+    };
+    focus();
+    void on("quick:show", focus).then(keep);
+    // 이 창은 자체 설정을 읽지 않는다 — 모양만 받아 와 메인 창과 같은 테마·글꼴·크기로 그린다.
+    void api.settingsGet().then((sv) => applyAppearance(sv.config.appearance)).catch(() => {});
+    void on("settings:changed", (cfg) => applyAppearance(cfg.appearance)).then(keep);
   });
 
   const submit = async () => {

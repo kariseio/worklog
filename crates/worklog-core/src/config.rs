@@ -435,6 +435,36 @@ impl Default for AutomationConfig {
 }
 
 // --------------------------------------------------------------------------- //
+// 겉모양 (v2 신규) — 테마 · 글꼴 · 글자 크기
+// --------------------------------------------------------------------------- //
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppearanceConfig {
+    /// system | light | dark
+    pub theme: String,
+    /// sketch(Gaegu 손글씨) | plain(기본 고딕)
+    pub font: String,
+    /// small | normal | large
+    pub text_size: String,
+}
+
+/// 고를 수 있는 값들. 그 외·빈 값은 [`Config::normalize`] 에서 기본값으로 되돌린다.
+pub const THEMES: [&str; 3] = ["system", "light", "dark"];
+pub const FONTS: [&str; 2] = ["sketch", "plain"];
+pub const TEXT_SIZES: [&str; 3] = ["small", "normal", "large"];
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            theme: "system".into(),
+            font: "sketch".into(),
+            text_size: "normal".into(),
+        }
+    }
+}
+
+// --------------------------------------------------------------------------- //
 // 최상위
 // --------------------------------------------------------------------------- //
 
@@ -448,6 +478,8 @@ pub struct Config {
     pub outputs: OutputsConfig,
     pub sources: SourcesConfig,
     pub automation: AutomationConfig,
+    /// 화면 겉모양(테마·글꼴·글자 크기). 옛 파일에는 없으므로 없으면 기본값.
+    pub appearance: AppearanceConfig,
 }
 
 impl Default for Config {
@@ -459,6 +491,7 @@ impl Default for Config {
             outputs: OutputsConfig::default(),
             sources: SourcesConfig::default(),
             automation: AutomationConfig::default(),
+            appearance: AppearanceConfig::default(),
         }
     }
 }
@@ -607,6 +640,12 @@ impl Config {
         if self.timezone.trim().is_empty() {
             self.timezone = "Asia/Seoul".into();
         }
+        // 겉모양은 정해진 값만 — 모르는 값·빈 칸은 기본값으로.
+        let d = AppearanceConfig::default();
+        let a = &mut self.appearance;
+        keep_known(&mut a.theme, &THEMES, &d.theme);
+        keep_known(&mut a.font, &FONTS, &d.font);
+        keep_known(&mut a.text_size, &TEXT_SIZES, &d.text_size);
     }
 
     /// UI 저장 정책(v1 과 동일): 비밀·헤더 값이 빈 칸이면 기존 값을 유지한다.
@@ -652,6 +691,16 @@ impl Config {
         .filter_map(|(n, on)| on.then_some(n))
         .collect()
     }
+}
+
+/// 앞뒤 공백을 떼고 소문자로 맞춘 값이 `allowed` 안에 있으면 그 값으로, 아니면 `fallback` 으로.
+fn keep_known(target: &mut String, allowed: &[&str], fallback: &str) {
+    let v = target.trim().to_lowercase();
+    *target = if allowed.contains(&v.as_str()) {
+        v
+    } else {
+        fallback.to_string()
+    };
 }
 
 fn keep_if_blank(target: &mut String, old: &str) {
@@ -897,6 +946,104 @@ mod tests {
         assert_eq!(nw.missing_credentials().len(), 5);
         nw.private_key_path = "k".into();
         assert!(!nw.missing_credentials().contains(&"private_key"));
+    }
+
+    #[test]
+    fn appearance_defaults() {
+        let a = Config::default().appearance;
+        assert_eq!(a, AppearanceConfig::default());
+        assert_eq!(a.theme, "system");
+        assert_eq!(a.font, "sketch"); // 손그림 스케치 룩이 기본
+        assert_eq!(a.text_size, "normal");
+        // 기본값은 언제나 고를 수 있는 값 안에 있어야 한다.
+        assert!(THEMES.contains(&a.theme.as_str()));
+        assert!(FONTS.contains(&a.font.as_str()));
+        assert!(TEXT_SIZES.contains(&a.text_size.as_str()));
+    }
+
+    #[test]
+    fn normalize_fixes_bad_appearance() {
+        // 모르는 값·빈 칸은 기본값으로.
+        let mut c = Config {
+            appearance: AppearanceConfig {
+                theme: "midnight".into(),
+                font: "  ".into(),
+                text_size: String::new(),
+            },
+            ..Default::default()
+        };
+        c.normalize();
+        assert_eq!(c.appearance, AppearanceConfig::default());
+
+        // 공백·대문자만 다른 정상 값은 다듬어서 살린다.
+        let mut c = Config {
+            appearance: AppearanceConfig {
+                theme: " Dark ".into(),
+                font: "PLAIN".into(),
+                text_size: "\tLarge\n".into(),
+            },
+            ..Default::default()
+        };
+        c.normalize();
+        assert_eq!(c.appearance.theme, "dark");
+        assert_eq!(c.appearance.font, "plain");
+        assert_eq!(c.appearance.text_size, "large");
+
+        // 파일에서 읽을 때도 같은 정리가 걸린다.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        fs::write(
+            &p,
+            r#"{"appearance":{"theme":"","font":"comic","text_size":" SMALL "}}"#,
+        )
+        .unwrap();
+        let c = Config::load_from(&p);
+        assert_eq!(c.appearance.theme, "system");
+        assert_eq!(c.appearance.font, "sketch");
+        assert_eq!(c.appearance.text_size, "small");
+    }
+
+    #[test]
+    fn appearance_survives_roundtrip() {
+        let c = Config {
+            appearance: AppearanceConfig {
+                theme: "dark".into(),
+                font: "plain".into(),
+                text_size: "large".into(),
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert_eq!(serde_json::from_str::<Config>(&json).unwrap(), c);
+
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        c.save_to(&p).unwrap();
+        assert_eq!(Config::load_from(&p), c);
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(raw["appearance"]["theme"], "dark");
+        assert_eq!(raw["appearance"]["text_size"], "large");
+        // 비밀이 아니므로 UI 로 나가는 사본에도 그대로 남는다.
+        assert_eq!(c.redacted().appearance, c.appearance);
+    }
+
+    #[test]
+    fn appearance_missing_in_file_gives_defaults() {
+        // 키가 통째로 없는 옛 settings.json.
+        let c: Config = serde_json::from_str(V1_SAMPLE).unwrap();
+        assert_eq!(c.appearance, AppearanceConfig::default());
+
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        fs::write(&p, r#"{"timezone":"Asia/Seoul"}"#).unwrap();
+        assert_eq!(Config::load_from(&p).appearance, AppearanceConfig::default());
+
+        // 일부 키만 있는 파일은 나머지만 기본값.
+        let c: Config = serde_json::from_str(r#"{"appearance":{"theme":"light"}}"#).unwrap();
+        assert_eq!(c.appearance.theme, "light");
+        assert_eq!(c.appearance.font, "sketch");
+        assert_eq!(c.appearance.text_size, "normal");
     }
 
     #[test]

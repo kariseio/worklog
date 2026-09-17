@@ -1,6 +1,7 @@
 // 앱 전역 상태 — 피드·생성 진행·설정·알림·토스트. 화면들은 여기 시그널만 읽고 액션 함수를 부른다.
 import { createSignal } from "solid-js";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { applyAppearance } from "./appearance";
 import {
   EDITED_PREFIX,
   api,
@@ -135,6 +136,7 @@ export async function loadSettings(): Promise<SettingsView | null> {
   try {
     const s = await api.settingsGet();
     setSettings(s);
+    applyAppearance(s.config.appearance);
     return s;
   } catch (e) {
     toast(errText(e), "error");
@@ -147,6 +149,7 @@ export async function saveSettings(cfg: Config): Promise<SettingsView | null> {
   try {
     const s = await api.settingsSet(cfg);
     setSettings(s);
+    applyAppearance(s.config.appearance);
     return s;
   } catch (e) {
     toast(errText(e), "error");
@@ -198,6 +201,11 @@ export function initStore(): () => void {
       on("reminder:fired", setReminder),
       on("update:available", setUpdate),
       on("engine:error", (e) => toast(e, "error")),
+      // 다른 창(빠른 메모)이나 백엔드가 설정을 바꿨을 때 — 모양은 바로 입히고 화면의 설정도 맞춘다.
+      on("settings:changed", (cfg) => {
+        setSettings((prev) => (prev ? { ...prev, config: cfg } : prev));
+        applyAppearance(cfg.appearance);
+      }),
     ]);
     if (disposed) {
       got.forEach((u) => u());
@@ -213,7 +221,8 @@ export function initStore(): () => void {
         if (i.generating && !generating()) setGenerating(i.generating);
         if (i.last_reminder && !reminder()) setReminder(i.last_reminder);
       }
-      await loadSettings();
+      const sv = await loadSettings();
+      if (sv) applyAppearance(sv.config.appearance);
     } catch (e) {
       toast(errText(e), "error");
     }

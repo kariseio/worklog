@@ -163,6 +163,7 @@ const config: Config = {
     realtime: { enabled: true, meeting_poll_min: 15, full_rescan_min: 30 },
     autostart: true, notify: true, global_shortcut: "Ctrl+Shift+Space",
   },
+  appearance: { theme: "system", font: "sketch", text_size: "normal" },
 };
 
 let gen: GenStatus | null = null;
@@ -285,6 +286,8 @@ export const mockApi = {
   settingsGet: async () => settingsView(),
   settingsSet: async (c: Config) => {
     Object.assign(config, structuredClone(c));
+    // 실제 백엔드처럼 저장 뒤 모든 창에 알린다(빠른 메모 창이 모양 변경을 받아 간다).
+    emit("settings:changed", structuredClone(config));
     return settingsView();
   },
   testConnection: async (kind: string): Promise<Check> => {

@@ -40,7 +40,7 @@
   width: 100%;
   padding-left: 30px;
   padding-right: 28px;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .journal-search-input::-webkit-search-cancel-button {
@@ -81,7 +81,7 @@
   background: transparent;
   padding: 2px 0;
   font-weight: 700;
-  font-size: 17px;
+  font-size: 1.0625rem;
   text-align: center;
   color: var(--ink);
   border-radius: var(--radius);
@@ -99,7 +99,7 @@
 }
 
 .journal-cal-wd {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--muted);
   text-align: center;
   margin-bottom: -4px;
@@ -117,7 +117,7 @@
   border-radius: var(--radius);
   background: transparent;
   color: var(--ink);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1;
 }
 
@@ -184,7 +184,7 @@
   align-items: center;
   gap: 10px;
   flex: none;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--muted);
   padding-bottom: 8px;
   border-bottom: var(--bw) dashed var(--line-soft);
@@ -287,7 +287,7 @@
 
 .journal-entry-status {
   white-space: nowrap;
-  line-height: 22px;
+  line-height: 1.375rem;
 }
 
 .journal-entry-gen {
@@ -297,26 +297,26 @@
 }
 
 .journal-entry-kpis {
-  font-size: 13px;
+  font-size: 0.8125rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .journal-entry-today {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--memo-ink);
   background: var(--memo);
   border: var(--bw) solid var(--line);
   border-radius: var(--radius-pill);
   padding: 0 6px;
-  line-height: 18px;
+  line-height: 1.125rem;
   white-space: nowrap;
 }
 
 .journal-entry-snip {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -348,7 +348,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   display: inline-block;
-  line-height: 22px;
+  line-height: 1.375rem;
 }
 
 /* 편집 중인 버튼 — 눌린 상태는 잉크로 채운다 */
@@ -374,7 +374,7 @@
   padding: 6px 20px;
   border-bottom: var(--bw) solid var(--line);
   background: var(--bg2);
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--muted);
 }
 
@@ -424,7 +424,7 @@
   gap: 8px 10px;
   padding: 16px 0;
   color: var(--err);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .journal-error-text {
@@ -437,8 +437,8 @@
 }
 
 .journal-doc .chip {
-  font-size: 12px;
-  line-height: 20px;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
   vertical-align: 1px;
   cursor: default;
 }
@@ -457,7 +457,7 @@
   resize: none;
   padding: 10px 12px;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.55;
   tab-size: 2;
 }
@@ -495,7 +495,7 @@
   padding: 0 20px;
   background: var(--bg2);
   border-top: var(--bw) solid var(--line);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .journal-sink {
@@ -527,7 +527,7 @@
   }
 
   .journal-title {
-    font-size: 22px;
+    font-size: 1.375rem;
   }
 
   .journal-btn-label {

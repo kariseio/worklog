@@ -5,7 +5,7 @@
 
 use chrono::NaiveDate;
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter as _, State};
 use tauri_plugin_dialog::DialogExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 use tauri_plugin_updater::UpdaterExt as _;
@@ -352,6 +352,8 @@ pub async fn settings_set(
     if let Err(e) = shell::apply_autostart(&app, new.automation.autostart) {
         tracing::warn!("자동 시작 설정 실패: {e}");
     }
+    // 모든 창(메인·빠른 메모)이 새 설정에 맞춰 바로 다시 그리도록 — 비밀 값은 뺀 사본.
+    let _ = app.emit("settings:changed", new.redacted());
     state.send(WorkerMsg::ConfigChanged(Box::new(new)))?;
     Ok(settings_view(&app, &state))
 }

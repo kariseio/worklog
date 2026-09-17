@@ -1,4 +1,4 @@
-// 설정 화면 — 왼쪽 하위 탭(자동화 · 수집 소스 · 저장 대상 · AI 요약 · 정보) + 오른쪽 폼.
+// 설정 화면 — 왼쪽 하위 탭(자동화 · 모양 · 수집 소스 · 저장 대상 · AI 요약 · 정보) + 오른쪽 폼.
 // 저장 버튼 없음: 토글·선택·칩·찾기는 즉시, 글자·숫자 칸은 blur·Enter 때 settings_set 으로 저장하고 머리글에 결과를 알린다.
 // (settings_set 마다 엔진이 감시를 다시 걸고 재수집하므로 타이핑마다 저장하지 않고, 마지막으로 보낸 값과 같으면 건너뛴다.)
 import {
@@ -16,6 +16,7 @@ import {
   type ParentProps,
 } from "solid-js";
 import { createStore, produce, reconcile, unwrap, type SetStoreFunction } from "solid-js/store";
+import type { Appearance } from "../appearance";
 import { Button, Chip, Field, Icon, Pill, Select, Spinner, TextInput, Toggle } from "../components/ui";
 import { api, type CalendarInfo, type Check, type Config, type DriveInfo, type Run, type SettingsView, type UpdateInfo } from "../ipc";
 import {
@@ -37,10 +38,11 @@ import "./settings.css";
 
 // ---- 탭 ------------------------------------------------------------------- //
 
-type TabId = "automation" | "sources" | "outputs" | "summary" | "about";
+type TabId = "automation" | "appearance" | "sources" | "outputs" | "summary" | "about";
 
 const TABS: { id: TabId; label: string; sub: string }[] = [
   { id: "automation", label: "자동화", sub: "수집은 자동으로, 일지 작성은 원할 때" },
+  { id: "appearance", label: "모양", sub: "테마 · 글꼴 · 글자 크기" },
   { id: "sources", label: "수집 소스", sub: "어디서 하루를 모을지" },
   { id: "outputs", label: "저장 대상", sub: "만든 일지를 어디에 둘지" },
   { id: "summary", label: "AI 요약", sub: "요약 문구를 어떻게 만들지" },
@@ -299,6 +301,9 @@ function Form(props: { initial: Config; tab: TabId; onState: (s: SaveState) => v
       <Match when={props.tab === "automation"}>
         <AutomationTab f={ctx} />
       </Match>
+      <Match when={props.tab === "appearance"}>
+        <AppearanceTab f={ctx} />
+      </Match>
       <Match when={props.tab === "sources"}>
         <SourcesTab f={ctx} />
       </Match>
@@ -336,6 +341,29 @@ function Labeled(props: ParentProps<{ label: string }>) {
       <span class="settings-sr">{props.label}</span>
       {props.children}
     </label>
+  );
+}
+
+/**
+ * 여럿 중 하나를 고르는 칩 한 줄. 고른 값은 잉크로 채우고 aria-pressed 로도 알린다
+ * (공용 Chip 은 눌림 상태를 보조 기술에 알리지 않아 여기서 버튼을 직접 그린다).
+ */
+function PickChips<T extends string>(props: { value: T; options: { value: T; label: string }[]; onPick: (v: T) => void }) {
+  return (
+    <div class="row">
+      <For each={props.options}>
+        {(o) => (
+          <button
+            type="button"
+            class={`chip chip-click ${props.value === o.value ? "chip-on" : ""}`}
+            aria-pressed={props.value === o.value}
+            onClick={() => props.onPick(o.value)}
+          >
+            {o.label}
+          </button>
+        )}
+      </For>
+    </div>
   );
 }
 
@@ -888,6 +916,71 @@ function RunResult(props: { run: Run }) {
         </span>
       </Match>
     </Switch>
+  );
+}
+
+// ---- 모양 -------------------------------------------------------------------- //
+
+const THEME_OPTS: { value: Appearance["theme"]; label: string }[] = [
+  { value: "system", label: "시스템" },
+  { value: "light", label: "라이트" },
+  { value: "dark", label: "다크" },
+];
+const FONT_OPTS: { value: Appearance["font"]; label: string }[] = [
+  { value: "sketch", label: "손글씨 (Gaegu)" },
+  { value: "plain", label: "기본 고딕" },
+];
+const SIZE_OPTS: { value: Appearance["text_size"]; label: string }[] = [
+  { value: "small", label: "작게" },
+  { value: "normal", label: "보통" },
+  { value: "large", label: "크게" },
+];
+
+/** 미리보기 줄에만 쓰는 글꼴 묶음 — styles.css 의 --font 와 같은 값이어야 한다(저장 전에도 보여 주려고 여기서 직접 지정). */
+const FONT_STACK: Record<Appearance["font"], string> = {
+  sketch: '"Gaegu", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif',
+  plain: '"Pretendard Variable", "Pretendard", "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif',
+};
+
+const PREVIEW_TEXT = "오늘 한 일을 적어두세요 · 가나다라 ABC 123";
+
+function AppearanceTab(props: { f: Ctx }) {
+  const f = props.f;
+  const a = () => f.draft.appearance;
+  // 칩은 누르는 즉시 저장한다. 저장이 끝나면 백엔드의 settings:changed 로 두 창 모두 새 모양을 입는다.
+  const setTheme = (v: Appearance["theme"]) => {
+    f.set("appearance", "theme", v);
+    f.now();
+  };
+  const setFont = (v: Appearance["font"]) => {
+    f.set("appearance", "font", v);
+    f.now();
+  };
+  const setSize = (v: Appearance["text_size"]) => {
+    f.set("appearance", "text_size", v);
+    f.now();
+  };
+
+  return (
+    <section class="settings-sec">
+      <Field label="테마" hint="시스템은 Windows 설정을 따릅니다">
+        <PickChips value={a().theme} options={THEME_OPTS} onPick={setTheme} />
+      </Field>
+      <Field label="글꼴" top>
+        <PickChips value={a().font} options={FONT_OPTS} onPick={setFont} />
+        {/* 저장이 끝나기 전에도 고른 글꼴을 바로 보여 준다 — 초안 값으로 직접 글꼴을 준다. */}
+        <div class="box settings-preview" style={{ "font-family": FONT_STACK[a().font] }}>
+          {PREVIEW_TEXT}
+        </div>
+      </Field>
+      <Field label="글자 크기">
+        <PickChips value={a().text_size} options={SIZE_OPTS} onPick={setSize} />
+      </Field>
+      <div class="muted small settings-note">
+        <Icon name="info" size={13} />
+        빠른 메모 창에도 같이 적용됩니다
+      </div>
+    </section>
   );
 }
 
