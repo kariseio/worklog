@@ -1,19 +1,19 @@
 // 화면 모양(테마 · 글꼴 · 글자 크기)을 <html> 의 data-* 로 옮긴다. 실제 색·글꼴·크기는 styles.css 가 정한다.
 //   data-theme : "light" | "dark" (없으면 시스템 설정을 따름)
-//   data-font  : "sketch" | "plain"
+//   data-font  : "rounded" | "sketch" | "plain"
 //   data-size  : "small" | "normal" | "large"
 // 설정을 읽어 오기 전 첫 그림에서 깜빡이지 않게 마지막 값을 localStorage 에 남겨 둔다.
 import type { Config } from "./ipc";
 
 export type Appearance = Config["appearance"];
 
-export const DEFAULT_APPEARANCE: Appearance = { theme: "system", font: "sketch", text_size: "normal" };
+export const DEFAULT_APPEARANCE: Appearance = { theme: "system", font: "rounded", text_size: "normal" };
 
 /** 마지막으로 적용한 모양(창을 새로 열 때 먼저 입히는 값). */
 const STORAGE_KEY = "worklog.appearance";
 
 const THEMES: Appearance["theme"][] = ["system", "light", "dark"];
-const FONTS: Appearance["font"][] = ["sketch", "plain"];
+const FONTS: Appearance["font"][] = ["rounded", "sketch", "plain"];
 const SIZES: Appearance["text_size"][] = ["small", "normal", "large"];
 
 /** 저장소·백엔드에서 온 값을 훑어 아는 값만 남긴다(모르는 값은 기본값). */
@@ -36,6 +36,7 @@ export function applyAppearance(a: Appearance) {
   // "시스템"은 특성을 아예 지운다 — 그래야 prefers-color-scheme 규칙이 그대로 산다.
   if (cur.theme === "system") delete root.dataset.theme;
   else root.dataset.theme = cur.theme;
+  // 글꼴은 기본값("rounded")일 때도 반드시 적는다 — styles.css 가 글꼴별 규칙을 data-font 로만 가른다.
   root.dataset.font = cur.font;
   root.dataset.size = cur.text_size;
   try {

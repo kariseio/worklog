@@ -443,7 +443,7 @@ impl Default for AutomationConfig {
 pub struct AppearanceConfig {
     /// system | light | dark
     pub theme: String,
-    /// sketch(Gaegu 손글씨) | plain(기본 고딕)
+    /// rounded(둥근 고딕 NanumSquareRound + 제목 Jua) | sketch(Gaegu 손글씨) | plain(기본 고딕)
     pub font: String,
     /// small | normal | large
     pub text_size: String,
@@ -451,14 +451,14 @@ pub struct AppearanceConfig {
 
 /// 고를 수 있는 값들. 그 외·빈 값은 [`Config::normalize`] 에서 기본값으로 되돌린다.
 pub const THEMES: [&str; 3] = ["system", "light", "dark"];
-pub const FONTS: [&str; 2] = ["sketch", "plain"];
+pub const FONTS: [&str; 3] = ["rounded", "sketch", "plain"];
 pub const TEXT_SIZES: [&str; 3] = ["small", "normal", "large"];
 
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
             theme: "system".into(),
-            font: "sketch".into(),
+            font: "rounded".into(),
             text_size: "normal".into(),
         }
     }
@@ -953,7 +953,7 @@ mod tests {
         let a = Config::default().appearance;
         assert_eq!(a, AppearanceConfig::default());
         assert_eq!(a.theme, "system");
-        assert_eq!(a.font, "sketch"); // 손그림 스케치 룩이 기본
+        assert_eq!(a.font, "rounded"); // 둥근 고딕(NanumSquareRound + Jua) 이 기본
         assert_eq!(a.text_size, "normal");
         // 기본값은 언제나 고를 수 있는 값 안에 있어야 한다.
         assert!(THEMES.contains(&a.theme.as_str()));
@@ -989,6 +989,19 @@ mod tests {
         assert_eq!(c.appearance.font, "plain");
         assert_eq!(c.appearance.text_size, "large");
 
+        // 고를 수 있는 글꼴은 세 개 모두 그대로 살아남는다.
+        for f in FONTS {
+            let mut c = Config {
+                appearance: AppearanceConfig {
+                    font: f.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            c.normalize();
+            assert_eq!(c.appearance.font, f);
+        }
+
         // 파일에서 읽을 때도 같은 정리가 걸린다.
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("settings.json");
@@ -999,7 +1012,7 @@ mod tests {
         .unwrap();
         let c = Config::load_from(&p);
         assert_eq!(c.appearance.theme, "system");
-        assert_eq!(c.appearance.font, "sketch");
+        assert_eq!(c.appearance.font, "rounded");
         assert_eq!(c.appearance.text_size, "small");
     }
 
@@ -1042,7 +1055,7 @@ mod tests {
         // 일부 키만 있는 파일은 나머지만 기본값.
         let c: Config = serde_json::from_str(r#"{"appearance":{"theme":"light"}}"#).unwrap();
         assert_eq!(c.appearance.theme, "light");
-        assert_eq!(c.appearance.font, "sketch");
+        assert_eq!(c.appearance.font, "rounded");
         assert_eq!(c.appearance.text_size, "normal");
     }
 

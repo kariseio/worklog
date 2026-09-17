@@ -927,7 +927,8 @@ const THEME_OPTS: { value: Appearance["theme"]; label: string }[] = [
   { value: "dark", label: "다크" },
 ];
 const FONT_OPTS: { value: Appearance["font"]; label: string }[] = [
-  { value: "sketch", label: "손글씨 (Gaegu)" },
+  { value: "rounded", label: "둥근 고딕 (기본)" },
+  { value: "sketch", label: "손글씨" },
   { value: "plain", label: "기본 고딕" },
 ];
 const SIZE_OPTS: { value: Appearance["text_size"]; label: string }[] = [
@@ -936,12 +937,23 @@ const SIZE_OPTS: { value: Appearance["text_size"]; label: string }[] = [
   { value: "large", label: "크게" },
 ];
 
-/** 미리보기 줄에만 쓰는 글꼴 묶음 — styles.css 의 --font 와 같은 값이어야 한다(저장 전에도 보여 주려고 여기서 직접 지정). */
+/** 미리보기 줄에만 쓰는 본문 글꼴 묶음 — styles.css 의 --font 와 같은 값이어야 한다(저장 전에도 보여 주려고 여기서 직접 지정). */
 const FONT_STACK: Record<Appearance["font"], string> = {
+  rounded: '"NanumSquareRound", "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif',
   sketch: '"Gaegu", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif',
   plain: '"Pretendard Variable", "Pretendard", "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif',
 };
 
+/** 같은 줄에서 보여 줄 제목 글꼴 — styles.css 의 --font-display · --display-weight 와 같은 값. */
+const DISPLAY_STACK: Record<Appearance["font"], string> = {
+  rounded: '"Jua", ' + FONT_STACK.rounded,
+  sketch: FONT_STACK.sketch,
+  plain: FONT_STACK.plain,
+};
+
+const DISPLAY_WEIGHT: Record<Appearance["font"], string> = { rounded: "400", sketch: "700", plain: "700" };
+
+const PREVIEW_TITLE = "업무일지";
 const PREVIEW_TEXT = "오늘 한 일을 적어두세요 · 가나다라 ABC 123";
 
 function AppearanceTab(props: { f: Ctx }) {
@@ -968,8 +980,15 @@ function AppearanceTab(props: { f: Ctx }) {
       </Field>
       <Field label="글꼴" top>
         <PickChips value={a().font} options={FONT_OPTS} onPick={setFont} />
-        {/* 저장이 끝나기 전에도 고른 글꼴을 바로 보여 준다 — 초안 값으로 직접 글꼴을 준다. */}
+        {/* 저장이 끝나기 전에도 고른 글꼴을 바로 보여 준다 — 초안 값으로 직접 글꼴을 준다.
+            앞의 '업무일지'는 제목 글꼴, 뒤 문장은 본문 글꼴이다. */}
         <div class="box settings-preview" style={{ "font-family": FONT_STACK[a().font] }}>
+          <span
+            class="settings-preview-title"
+            style={{ "font-family": DISPLAY_STACK[a().font], "font-weight": DISPLAY_WEIGHT[a().font] }}
+          >
+            {PREVIEW_TITLE}
+          </span>
           {PREVIEW_TEXT}
         </div>
       </Field>

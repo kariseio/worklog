@@ -163,7 +163,7 @@ const config: Config = {
     realtime: { enabled: true, meeting_poll_min: 15, full_rescan_min: 30 },
     autostart: true, notify: true, global_shortcut: "Ctrl+Shift+Space",
   },
-  appearance: { theme: "system", font: "sketch", text_size: "normal" },
+  appearance: { theme: "system", font: "rounded", text_size: "normal" },
 };
 
 let gen: GenStatus | null = null;

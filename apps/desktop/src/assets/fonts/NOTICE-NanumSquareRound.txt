@@ -1,0 +1,4 @@
+NanumSquareRound (나눔스퀘어라운드) — Copyright (c) NAVER Corporation.
+Licensed under the SIL Open Font License, Version 1.1 (same terms as the OFL-*.txt copies in this folder).
+Source: https://hangeul.naver.com/font  (webfont host: https://hangeul.pstatic.net/hangeul_static/webfont/NanumSquareRound/)
+Files bundled: NanumSquareRoundR.ttf (400), NanumSquareRoundB.ttf (700), NanumSquareRoundEB.ttf (800).

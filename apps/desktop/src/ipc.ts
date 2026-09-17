@@ -242,7 +242,7 @@ export interface Config {
   /** 화면 모양 — 테마 · 글꼴 · 글자 크기. 값은 `appearance.ts` 가 <html> 의 data-* 로 옮긴다. */
   appearance: {
     theme: "system" | "light" | "dark";
-    font: "sketch" | "plain";
+    font: "rounded" | "sketch" | "plain";
     text_size: "small" | "normal" | "large";
   };
 }

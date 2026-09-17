@@ -1,5 +1,9 @@
-/* 업무일지 — 공용 스타일. 손그림 종이 스케치 룩: 1.5px 잉크 테두리 · 노란 메모 · Gaegu.
-   그림자는 쓰지 않는다(메모·지표·생성 카드·빠른 메모만 2px 스티커 그림자). 화면별 스타일은 screens/*.css */
+/* 업무일지 — 공용 스타일. 손그림 종이 스케치 룩: 1.5px 잉크 테두리 · 노란 메모.
+   그림자는 쓰지 않는다(메모·지표·생성 카드·빠른 메모만 2px 스티커 그림자). 화면별 스타일은 screens/*.css
+
+   글꼴은 두 갈래다 — 본문·UI 는 var(--font), 큰 제목·숫자는 var(--font-display).
+   손글씨·장식 글꼴은 작은 본문에서 읽기 힘들어, 기본값(둥근 고딕)은 본문에 또렷한
+   NanumSquareRound 를 쓰고 제목에만 Jua 를 얹는다. */
 
 @font-face {
   font-family: "Gaegu";
@@ -13,6 +17,39 @@
   font-family: "Gaegu";
   src: url("./assets/fonts/Gaegu-Bold.ttf") format("truetype");
   font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "NanumSquareRound";
+  src: url("./assets/fonts/NanumSquareRoundR.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "NanumSquareRound";
+  src: url("./assets/fonts/NanumSquareRoundB.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "NanumSquareRound";
+  src: url("./assets/fonts/NanumSquareRoundEB.ttf") format("truetype");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* 제목용 — 굵기는 하나뿐이라 400 으로만 쓴다(더 굵게 지정하면 가짜 굵기가 생겨 뭉갠다). */
+@font-face {
+  font-family: "Jua";
+  src: url("./assets/fonts/Jua-Regular.ttf") format("truetype");
+  font-weight: 400;
   font-style: normal;
   font-display: swap;
 }
@@ -45,13 +82,15 @@
   /* 살짝 어긋난 '스티커' 그림자 — 메모 · 지표 · 생성 카드 · 빠른 메모에만.
      번지는(blur) 그림자는 어디에도 쓰지 않는다. */
   --sticker: 2px 2px 0 var(--line);
-  --font: "Gaegu", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  /* 본문·UI 글꼴. 제목은 --font-display, 제목 굵기는 --display-weight. */
+  --font: "NanumSquareRound", "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  --font-display: "Jua", var(--font);
+  --display-weight: 400;
   --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
-  /* 글자 크기는 이 한 값만 바꾼다 — 화면의 글자 크기는 모두 rem 이라 같이 따라온다.
-     Gaegu 는 같은 px 에서 눈에 보이는 글자가 작아(x-height 가 낮다) 뿌리 크기를 한 단계 올린다. */
-  --root-size: 17.5px;
+  /* 글자 크기는 이 한 값만 바꾼다 — 화면의 글자 크기는 모두 rem 이라 같이 따라온다. */
+  --root-size: 15px;
   font-family: var(--font);
-  line-height: 1.35;
+  line-height: 1.5;
 }
 
 /* 어두운 색은 두 군데에 같은 값으로 둔다 — 시스템을 따를 때(위)와 '다크'를 고른 때(아래).
@@ -109,23 +148,44 @@
 
 /* ---- 글꼴 · 글자 크기 ---------------------------------------------------------- */
 
-/* 기본은 손글씨(Gaegu). '기본 고딕'은 같은 px 에서 더 크고 빽빽해 보여 뿌리 크기를 한 단계 낮춘다. */
+/* 기본은 '둥근 고딕'(:root 에 적어 둔 값) — 본문 NanumSquareRound + 제목 Jua.
+   '손글씨'는 Gaegu 한 벌로 본문·제목을 모두 쓴다. Gaegu 는 같은 px 에서 눈에 보이는 글자가
+   작아(x-height 가 낮다) 뿌리 크기를 두 단계 올리고, 줄 간격은 좁게 둔다. */
+:root[data-font="sketch"] {
+  --font: "Gaegu", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  --font-display: "Gaegu", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  --display-weight: 700;
+  --root-size: 17.5px;
+  line-height: 1.35;
+}
+
+/* '기본 고딕'은 같은 px 에서 더 크고 빽빽해 보여 뿌리 크기를 한 단계 낮춘다. 제목도 같은 글꼴. */
 :root[data-font="plain"] {
   --font: "Pretendard Variable", "Pretendard", "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif;
+  --font-display: var(--font);
+  --display-weight: 700;
   --root-size: 14.5px;
 }
 
-/* 네 조합(글꼴 × 작게/크게)을 그대로 적는다 — 글꼴+크기가 함께 걸린 규칙이 더 구체적이라 이긴다. */
+/* 여섯 조합(글꼴 × 작게/크게)을 그대로 적는다 — 글꼴+크기가 함께 걸린 규칙이 더 구체적이라 이긴다. */
 :root[data-size="small"] {
+  --root-size: 13.5px;
+}
+
+:root[data-size="large"] {
+  --root-size: 17px;
+}
+
+:root[data-font="sketch"][data-size="small"] {
   --root-size: 16px;
+}
+
+:root[data-font="sketch"][data-size="large"] {
+  --root-size: 19.5px;
 }
 
 :root[data-font="plain"][data-size="small"] {
   --root-size: 13px;
-}
-
-:root[data-size="large"] {
-  --root-size: 19.5px;
 }
 
 :root[data-font="plain"][data-size="large"] {
@@ -136,57 +196,105 @@ html {
   font-size: var(--root-size);
 }
 
+/* 큰 제목·지표 숫자만 장식 글꼴로. 굵기는 글꼴마다 다르다(Jua 는 400 한 벌뿐). */
+.screen-title,
+.kpi b,
+.today-gen-title,
+.doc h1,
+.doc h2 {
+  font-family: var(--font-display);
+  font-weight: var(--display-weight);
+}
+
+/* 굵은 글씨는 어느 글꼴에서나 700 — NanumSquareRound 는 800(EB)도 있어 못 박아 둔다. */
+b,
+strong {
+  font-weight: 700;
+}
+
 /* ---- 손글씨(Gaegu)일 때만: 더 진한 흐린 글씨 · 굵은 획 -------------------------------
    Gaegu 는 획이 가늘어 같은 회색이 고딕보다 훨씬 흐려 보인다. 흐린 글씨 두 색만 더 진하게
    되돌리고(잉크 색은 그대로), 획을 아주 얇게 덧그린다.
+   둥근 고딕·기본 고딕은 이미 또렷해 덧그리지 않는다(덧그리면 오히려 뭉갠다).
    테마 규칙(:root:not([data-theme="light"]) · :root[data-theme="dark"])과 특이성이 같으므로
-   반드시 그 뒤에 두고, 어두운 값은 :not([data-font="plain"]) 를 덧붙여 한 단계 더 구체적으로 적는다. */
+   반드시 그 뒤에 두고, 어두운 값은 [data-font="sketch"] 를 덧붙여 한 단계 더 구체적으로 적는다. */
 
-:root:not([data-font="plain"]) {
+:root[data-font="sketch"] {
   --muted: #4b4b52;
   --faint: #83838a;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]):not([data-font="plain"]) {
+  :root:not([data-theme="light"])[data-font="sketch"] {
     --muted: #c0beb6;
     --faint: #8d8b84;
   }
 }
 
-:root[data-theme="dark"]:not([data-font="plain"]) {
+:root[data-theme="dark"][data-font="sketch"] {
   --muted: #c0beb6;
   --faint: #8d8b84;
 }
 
 /* 획 덧그리기 — 본문은 0.28px, 이미 굵은 글씨는 0.2px(더 두꺼우면 뭉개진다). */
-html:not([data-font="plain"]) body {
+html[data-font="sketch"] body {
   -webkit-text-stroke: 0.28px currentColor;
 }
 
-html:not([data-font="plain"]) b,
-html:not([data-font="plain"]) strong,
-html:not([data-font="plain"]) .screen-title,
-html:not([data-font="plain"]) .btn-primary,
-html:not([data-font="plain"]) .chip-on {
+html[data-font="sketch"] b,
+html[data-font="sketch"] strong,
+html[data-font="sketch"] .screen-title,
+html[data-font="sketch"] .btn-primary,
+html[data-font="sketch"] .chip-on {
   -webkit-text-stroke: 0.2px currentColor;
 }
 
 /* 입력 칸의 글자는 덧그리지 않는다 — 커서·선택 영역이 지저분해진다. */
-html:not([data-font="plain"]) input,
-html:not([data-font="plain"]) textarea,
-html:not([data-font="plain"]) select {
+html[data-font="sketch"] input,
+html[data-font="sketch"] textarea,
+html[data-font="sketch"] select {
   -webkit-text-stroke: 0;
 }
 
 /* 짧은 이름표는 Gaegu Bold 로 — 한두 낱말은 굵어야 눈에 들어온다. */
-html:not([data-font="plain"]) .rail-item span,
-html:not([data-font="plain"]) .btn,
-html:not([data-font="plain"]) .pill,
-html:not([data-font="plain"]) .kpi .small,
-html:not([data-font="plain"]) .settings-nav,
-html:not([data-font="plain"]) .field-label {
+html[data-font="sketch"] .rail-item span,
+html[data-font="sketch"] .btn,
+html[data-font="sketch"] .pill,
+html[data-font="sketch"] .kpi .small,
+html[data-font="sketch"] .settings-nav,
+html[data-font="sketch"] .field-label {
   font-weight: 700;
+}
+
+/* 둥근 고딕도 같은 자리를 굵게(NanumSquareRound Bold) — 칩까지 넣는다. 본문은 400 그대로. */
+html[data-font="rounded"] .rail-item span,
+html[data-font="rounded"] .btn,
+html[data-font="rounded"] .chip,
+html[data-font="rounded"] .pill,
+html[data-font="rounded"] .kpi .small,
+html[data-font="rounded"] .settings-nav,
+html[data-font="rounded"] .field-label {
+  font-weight: 700;
+}
+
+/* 기본 버튼 하나만 한 단계 더 굵게(ExtraBold) — 화면에서 다음 할 일을 짚어 준다. */
+html[data-font="rounded"] .btn-primary {
+  font-weight: 800;
+}
+
+/* 메모 말풍선 · 빠른 메모는 사용자가 직접 쓴 말이라 본문 글꼴 그대로 간다(제목 글꼴 아님).
+   크기만 글꼴별로 — Gaegu 는 작아 보여 한 단계 키우고, 둥근 고딕은 본문 크기면 충분하다. */
+.today-memo,
+.quick {
+  font-family: var(--font);
+}
+
+:root[data-font="rounded"] .today-memo-text {
+  font-size: 1rem;
+}
+
+:root[data-font="sketch"] .today-memo-text {
+  font-size: 1.0625rem;
 }
 
 * {
@@ -390,7 +498,6 @@ a {
 
 .screen-title {
   font-size: 1.625rem;
-  font-weight: 700;
   line-height: 1.15;
 }
 
@@ -591,7 +698,6 @@ a {
 
 .kpi b {
   font-size: 1.25rem;
-  font-weight: 700;
 }
 
 .kpi .small {
@@ -835,13 +941,11 @@ a {
 
 .doc h1 {
   font-size: 1.25rem;
-  font-weight: 700;
   margin: 0 0 12px;
 }
 
 .doc h2 {
   font-size: 1.125rem;
-  font-weight: 700;
   margin: 14px 0 6px;
   padding-bottom: 2px;
   border-bottom: var(--bw) dashed var(--line-soft);

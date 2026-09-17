@@ -156,7 +156,8 @@
 
 .settings-sec-title {
   font-size: 1.0625rem;
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-weight: var(--display-weight);
   color: var(--ink);
 }
 
@@ -220,7 +221,12 @@
   -webkit-text-security: none;
 }
 
-/* 글꼴 미리보기 한 줄 — 고른 글꼴로 실제 문장을 보여 준다. */
+/* 글꼴 미리보기 한 줄 — 고른 글꼴로 제목 글꼴 견본 + 실제 문장을 보여 준다. */
+.settings-preview-title {
+  font-size: 1.125rem;
+  margin-right: 8px;
+}
+
 .settings-preview {
   padding: 8px 12px;
   max-width: 420px;
