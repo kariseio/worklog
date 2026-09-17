@@ -16,12 +16,12 @@
   gap: 4px;
   padding: 16px 12px 14px;
   background: var(--bg2);
-  border-right: 1px solid var(--line);
+  border-right: var(--bw) solid var(--line);
 }
 
 @media (max-width: 840px) {
   .settings-aside {
-    width: 168px;
+    width: 172px;
   }
 }
 
@@ -36,13 +36,14 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border: var(--bw) solid transparent;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--ink);
-  font-size: 14px;
+  font-size: 16px;
+  line-height: 1.2;
   text-align: left;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background 0.12s;
 }
 
 .settings-nav:hover {
@@ -52,7 +53,6 @@
 .settings-nav.is-active {
   background: var(--surface);
   border-color: var(--line);
-  box-shadow: var(--shadow);
   font-weight: 700;
 }
 
@@ -65,7 +65,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  border: 1px solid var(--ink);
+  border: var(--bw) solid var(--line);
   flex: none;
 }
 
@@ -76,13 +76,13 @@
 .settings-aside-foot {
   margin-top: auto;
   padding: 0 12px;
-  line-height: 1.4;
+  line-height: 1.35;
 }
 
 .settings-path {
   display: block;
   margin-top: 2px;
-  font-size: 11.5px;
+  font-size: 12px;
   word-break: break-all;
   user-select: text;
 }
@@ -136,7 +136,7 @@
   flex-direction: column;
   gap: 10px;
   padding: 14px 0;
-  border-bottom: 1px dashed var(--line);
+  border-bottom: var(--bw) dashed var(--line-soft);
   max-width: 860px;
 }
 
@@ -155,13 +155,13 @@
 }
 
 .settings-sec-title {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
   color: var(--ink);
 }
 
 .settings-note {
-  line-height: 1.4;
+  line-height: 1.35;
   display: flex;
   align-items: center;
   gap: 5px;
@@ -189,11 +189,11 @@
 }
 
 .settings-time {
-  width: 120px;
+  width: 124px;
 }
 
 .settings-num {
-  width: 90px;
+  width: 92px;
 }
 
 .settings-short {
@@ -207,7 +207,7 @@
 
 .settings-secret {
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .settings-secret-area {
@@ -316,13 +316,13 @@
 .settings-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .settings-table th,
 .settings-table td {
   padding: 5px 8px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--bw) solid var(--line-faint);
   text-align: left;
   vertical-align: top;
 }
@@ -330,7 +330,7 @@
 .settings-table th {
   color: var(--muted);
   font-weight: 400;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
 .settings-table tr:last-child td {
@@ -373,5 +373,5 @@
   user-select: text;
   max-height: 160px;
   overflow: auto;
-  line-height: 1.5;
+  line-height: 1.45;
 }

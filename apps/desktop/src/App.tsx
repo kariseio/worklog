@@ -58,6 +58,7 @@ export default function App() {
             class={`rail-item ${screen() === n.id ? "is-active" : ""}`}
             onClick={() => setScreen(n.id)}
             aria-current={screen() === n.id ? "page" : undefined}
+            aria-label={n.label}
           >
             <Icon name={n.icon} size={20} />
             <span>{n.label}</span>

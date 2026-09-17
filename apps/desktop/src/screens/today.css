@@ -4,6 +4,7 @@
 
 .today-header-date {
   color: var(--muted);
+  font-size: 16px;
   white-space: nowrap;
 }
 
@@ -16,7 +17,7 @@
   cursor: pointer;
   color: inherit;
   font: inherit;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   flex: 0 1 auto;
   min-width: 0;
 }
@@ -34,7 +35,7 @@
 }
 
 .today-sched:hover .pill {
-  border-color: var(--line-strong);
+  background: var(--bg2);
 }
 
 .today-sched:focus-visible {
@@ -48,8 +49,8 @@
   align-items: center;
   gap: 6px;
   padding: 5px 20px;
-  border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--ok) 10%, var(--bg));
+  border-bottom: var(--bw) solid var(--line);
+  background: color-mix(in srgb, var(--ok) 12%, var(--bg));
   color: var(--ok);
 }
 
@@ -73,7 +74,7 @@
   gap: 8px 10px;
   min-height: 54px;
   padding: 8px 20px;
-  border-bottom: 1px dashed var(--faint);
+  border-bottom: var(--bw) dashed var(--line-soft);
 }
 
 /* 지표 스트립은 줄바꿈(flex-wrap)된다. 상태 글은 줄어들며 말줄임, '지금 갱신' 버튼은 항상 보인다. */
@@ -106,6 +107,7 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  box-shadow: var(--sticker);
 }
 
 .today-gen-head {
@@ -115,7 +117,7 @@
 }
 
 .today-gen-title {
-  font-size: 16px;
+  font-size: 18px;
 }
 
 .today-gen-steps {
@@ -129,27 +131,28 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius-pill);
   padding: 2px 10px;
-  font-size: 12.5px;
+  font-size: 14px;
   background: var(--surface);
   white-space: nowrap;
 }
 
 .today-step.is-done {
-  background: var(--bg2);
-  color: var(--muted);
+  background: var(--line-faint);
+  color: var(--ink);
 }
 
 .today-step.is-now {
   background: var(--ink);
   color: var(--bg);
-  border-color: var(--ink);
+  border-color: var(--line);
 }
 
 .today-step.is-todo {
   border-style: dashed;
+  border-color: var(--line-soft);
   color: var(--muted);
 }
 
@@ -161,13 +164,13 @@
   flex: 1 1 12px;
   min-width: 12px;
   max-width: 48px;
-  border-top: 1px solid var(--line);
+  border-top: var(--bw) solid var(--line);
 }
 
 .today-prog {
-  height: 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  height: 10px;
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius-pill);
   overflow: hidden;
   background: var(--surface);
 }
@@ -179,7 +182,7 @@
 }
 
 .today-gen.is-cancel .today-prog-fill {
-  background: var(--faint);
+  background: var(--line-soft);
 }
 
 /* ---- 필터 · 경고 ------------------------------------------------------------ */
@@ -203,7 +206,7 @@
   background: transparent;
   padding: 0 4px;
   color: var(--warn);
-  font-size: 12.5px;
+  font-size: 14px;
   display: inline-flex;
   gap: 4px;
   align-items: center;
@@ -220,7 +223,7 @@
   margin: 0;
   padding: 2px 0 0 18px;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 14px;
   user-select: text;
 }
 
@@ -256,13 +259,13 @@
   align-items: center;
   gap: 10px;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 13px;
   margin-top: 4px;
 }
 
 .today-sep-line {
   flex: 1;
-  border-top: 1px dashed var(--faint);
+  border-top: var(--bw) dashed var(--line-soft);
 }
 
 .today-row {
@@ -278,9 +281,9 @@
 .today-tm {
   width: 48px;
   flex: none;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--muted);
-  padding-top: 6px;
+  padding-top: 7px;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -293,23 +296,24 @@
   display: flex;
   gap: 8px;
   align-items: flex-start;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius);
   padding: 6px 10px;
   background: var(--surface);
-  box-shadow: var(--shadow);
   max-width: min(600px, 100%);
   min-width: 0;
 }
 
 .today-ev > .ic {
-  margin-top: 2px;
-  color: var(--muted);
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  color: var(--ink);
 }
 
 .today-ev.is-active {
   background: var(--active);
-  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+  border-color: var(--line);
 }
 
 .today-ev-body {
@@ -329,19 +333,29 @@
 }
 
 .today-ev-live {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
 }
 
+/* 메모 말풍선 — 노란 종이 + 스티커 그림자 + 손으로 붙인 듯한 미세한 기울기 */
 .today-memo {
   background: var(--memo);
-  border: 1px solid var(--memo-line);
+  border: var(--bw) solid var(--memo-line);
   border-radius: 12px 12px 2px 12px;
   padding: 8px 12px;
   max-width: min(540px, 78%);
   min-width: 0;
   color: var(--memo-ink);
-  box-shadow: var(--shadow);
+  box-shadow: var(--sticker);
+  transform-origin: 100% 50%;
+}
+
+.today-row-memo:nth-child(odd) .today-memo {
+  transform: rotate(-0.4deg);
+}
+
+.today-row-memo:nth-child(even) .today-memo {
+  transform: rotate(0.35deg);
 }
 
 .today-memo.is-editing {
@@ -363,32 +377,35 @@
   flex-wrap: wrap;
 }
 
+/* 노란 말풍선 안에서는 태그 칩을 흰 종이로 — 와이어프레임과 같게 */
 .today-memo .chip-memo {
-  background: color-mix(in srgb, var(--surface) 55%, var(--memo));
+  background: var(--surface);
+  color: var(--ink);
 }
 
 .today-memo .btn-ghost {
-  color: color-mix(in srgb, var(--memo-ink) 70%, transparent);
+  color: color-mix(in srgb, var(--memo-ink) 72%, transparent);
 }
 
 .today-memo .btn-ghost:hover:not(:disabled) {
   color: var(--memo-ink);
-  background: color-mix(in srgb, var(--surface) 40%, transparent);
+  background: color-mix(in srgb, var(--surface) 45%, transparent);
 }
 
 .today-memo-edit {
   width: 100%;
   resize: none;
   overflow-y: auto;
-  min-height: 36px;
+  min-height: 38px;
   max-height: 120px;
   background: var(--surface);
   color: var(--ink);
+  border-color: var(--line);
 }
 
 .today-memo-hint {
-  font-size: 12px;
-  color: color-mix(in srgb, var(--memo-ink) 65%, transparent);
+  font-size: 13px;
+  color: color-mix(in srgb, var(--memo-ink) 68%, transparent);
   margin-right: auto;
 }
 
@@ -396,7 +413,7 @@
 
 .today-composer {
   flex: none;
-  border-top: 1px solid var(--line);
+  border-top: var(--bw) solid var(--line);
   padding: 10px 20px 12px;
   display: flex;
   flex-direction: column;
@@ -419,15 +436,15 @@
 
 .today-input {
   flex: 1;
-  min-height: 36px;
-  max-height: 96px;
+  min-height: 44px;
+  max-height: 104px;
   resize: none;
   overflow-y: auto;
 }
 
 .today-send {
   width: 44px;
-  height: 36px;
+  height: 44px;
   padding: 0;
   justify-content: center;
   flex: none;
@@ -446,7 +463,7 @@
   height: 9px;
   border-radius: 50%;
   background: var(--memo);
-  border: 1px solid var(--memo-line);
+  border: var(--bw) solid var(--line);
   display: inline-block;
   flex: none;
 }

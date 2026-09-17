@@ -13,11 +13,11 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   padding: 12px 12px 0;
   min-height: 0;
   background: var(--bg2);
-  border-right: 1px solid var(--line);
+  border-right: var(--bw) solid var(--line);
 }
 
 .journal-search {
@@ -40,7 +40,7 @@
   width: 100%;
   padding-left: 30px;
   padding-right: 28px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .journal-search-input::-webkit-search-cancel-button {
@@ -63,7 +63,7 @@
 
 .journal-search-clear:hover {
   color: var(--ink);
-  background: var(--bg2);
+  background: var(--line-faint);
 }
 
 /* 달력 */
@@ -81,10 +81,10 @@
   background: transparent;
   padding: 2px 0;
   font-weight: 700;
-  font-size: 15px;
+  font-size: 17px;
   text-align: center;
   color: var(--ink);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius);
 }
 
 .journal-cal-title:hover {
@@ -99,25 +99,25 @@
 }
 
 .journal-cal-wd {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted);
   text-align: center;
   margin-bottom: -4px;
 }
 
 .journal-day {
-  height: 32px;
+  height: 36px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 2px;
   padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border: var(--bw) solid transparent;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--ink);
-  font-size: 12.5px;
+  font-size: 14px;
   line-height: 1;
 }
 
@@ -142,38 +142,37 @@
 
 .journal-day.is-today {
   border-style: dashed;
-  border-color: var(--faint);
+  border-color: var(--line-soft);
 }
 
 .journal-day.is-selected {
   border-style: solid;
-  border-color: var(--line-strong);
+  border-color: var(--line);
   background: var(--surface);
   color: var(--ink);
-  box-shadow: var(--shadow);
 }
 
 .journal-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  border: 1px solid var(--line-strong);
+  border: var(--bw) solid var(--line);
   background: var(--surface);
   flex: none;
   display: inline-block;
 }
 
 .journal-dot-generated {
-  background: var(--line-strong);
+  background: var(--line);
 }
 
 .journal-dot-edited {
-  background: linear-gradient(90deg, var(--line-strong) 50%, var(--surface) 50%);
+  background: linear-gradient(90deg, var(--line) 50%, var(--surface) 50%);
 }
 
 .journal-dot-none {
   border-style: dashed;
-  border-color: var(--faint);
+  border-color: var(--line-soft);
 }
 
 .journal-dot-blank {
@@ -185,10 +184,10 @@
   align-items: center;
   gap: 10px;
   flex: none;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted);
   padding-bottom: 8px;
-  border-bottom: 1px dashed var(--line);
+  border-bottom: var(--bw) dashed var(--line-soft);
 }
 
 .journal-legend > span {
@@ -221,7 +220,7 @@
   gap: 6px;
   flex: none;
   padding-bottom: 6px;
-  border-bottom: 1px dashed var(--line);
+  border-bottom: var(--bw) dashed var(--line-soft);
 }
 
 .journal-list {
@@ -229,7 +228,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   margin: 0 -4px;
   padding: 0 4px 10px;
 }
@@ -243,9 +242,9 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding: 6px 8px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  border: var(--bw) solid transparent;
+  border-radius: var(--radius);
   cursor: pointer;
   text-align: left;
 }
@@ -261,14 +260,13 @@
 
 .journal-entry.is-today.is-none {
   border-style: dashed;
-  border-color: var(--faint);
+  border-color: var(--line-soft);
 }
 
 .journal-entry.is-selected {
   background: var(--surface);
   border-style: solid;
-  border-color: var(--line-strong);
-  box-shadow: var(--shadow);
+  border-color: var(--line);
 }
 
 /* 날짜 · 상태 · (오늘) · 만들기. 좁은 사이드바에서 상태 글자가 낱말마다 줄바꿈되지 않게 —
@@ -279,7 +277,7 @@
   align-items: center;
   gap: 2px 6px;
   min-width: 0;
-  min-height: 21px;
+  min-height: 22px;
 }
 
 .journal-entry-date {
@@ -289,7 +287,7 @@
 
 .journal-entry-status {
   white-space: nowrap;
-  line-height: 21px;
+  line-height: 22px;
 }
 
 .journal-entry-gen {
@@ -299,26 +297,26 @@
 }
 
 .journal-entry-kpis {
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .journal-entry-today {
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 700;
   color: var(--memo-ink);
   background: var(--memo);
-  border: 1px solid var(--memo-line);
-  border-radius: 999px;
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius-pill);
   padding: 0 6px;
-  line-height: 16px;
+  line-height: 18px;
   white-space: nowrap;
 }
 
 .journal-entry-snip {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -350,17 +348,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   display: inline-block;
-  line-height: 20px;
+  line-height: 22px;
 }
 
+/* 편집 중인 버튼 — 눌린 상태는 잉크로 채운다 */
 .journal-btn-on {
-  border-color: var(--line-strong);
-  background: var(--bg2);
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.journal-btn-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 86%, var(--bg));
 }
 
 /* 저장하지 않은 임시 편집본이 남아 있는 날짜 */
 .journal-btn-draft {
-  border-color: color-mix(in srgb, var(--warn) 60%, var(--line));
   color: var(--warn);
 }
 
@@ -370,9 +372,9 @@
   gap: 10px;
   flex: none;
   padding: 6px 20px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--bw) solid var(--line);
   background: var(--bg2);
-  font-size: 12.5px;
+  font-size: 14px;
   color: var(--muted);
 }
 
@@ -382,9 +384,10 @@
 
 .journal-bar {
   flex: 1;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--line);
+  height: 8px;
+  border: var(--bw) solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
   overflow: hidden;
 }
 
@@ -396,7 +399,7 @@
 }
 
 .journal-body {
-  padding: 16px 20px;
+  padding: 14px 20px;
 }
 
 .journal-body.is-editing {
@@ -421,7 +424,7 @@
   gap: 8px 10px;
   padding: 16px 0;
   color: var(--err);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .journal-error-text {
@@ -434,8 +437,8 @@
 }
 
 .journal-doc .chip {
-  font-size: 11.5px;
-  line-height: 19px;
+  font-size: 12px;
+  line-height: 20px;
   vertical-align: 1px;
   cursor: default;
 }
@@ -491,8 +494,8 @@
   gap: 14px;
   padding: 0 20px;
   background: var(--bg2);
-  border-top: 1px solid var(--line);
-  font-size: 13px;
+  border-top: var(--bw) solid var(--line);
+  font-size: 14px;
 }
 
 .journal-sink {
@@ -524,7 +527,7 @@
   }
 
   .journal-title {
-    font-size: 19px;
+    font-size: 22px;
   }
 
   .journal-btn-label {
