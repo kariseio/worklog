@@ -54,7 +54,7 @@ jobs:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: "업무일지 ${{ github.ref_name }}"
-          releaseBody: "설치: `업무일지_*_x64-setup.exe` · 기존 설치본은 앱 안에서 자동 업데이트됩니다."
+          releaseBody: "설치: `Worklog_*_x64-setup.exe` · 기존 설치본은 앱 안에서 자동 업데이트됩니다."
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

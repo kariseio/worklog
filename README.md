@@ -30,7 +30,7 @@
 
 ## 설치
 
-1. [GitHub Releases](https://github.com/kariseio/worklog/releases) 에서 **`업무일지_<버전>_x64-setup.exe`** 를 받아 실행한다.
+1. [GitHub Releases](https://github.com/kariseio/worklog/releases) 에서 **`Worklog_<버전>_x64-setup.exe`** 를 받아 실행한다.
 2. Windows 10/11 (x64). **WebView2** 가 필요한데 요즘 Windows 에는 보통 이미 깔려 있다.
 3. 한 번 설치하면 **앱 안에서 자동 업데이트**된다. (설정 → 정보 → `업데이트 확인`)
 
@@ -134,4 +134,5 @@ docs/v2-plan.md          설계 · 결정 기록
 
 ## 변경 이력
 
+- **v0.2.1** — 일지 템플릿 3종(표준·보고용·회고용), 일지 목록에 날짜별 지표, 지난 날짜 타임라인, 설정 › 모양(테마·글꼴·글자 크기), 손그림 룩. 설치기 이름을 `Worklog_…` 로(자동 업데이트용).
 - **v0.2.0** — Rust + Tauri 2 로 전면 재작성 (Python v1 제거).
