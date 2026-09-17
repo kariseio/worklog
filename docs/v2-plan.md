@@ -13,7 +13,7 @@
 | 저장소 | SQLite (`~/.worklog/worklog.db`, rusqlite bundled, WAL) |
 | 실시간 | 행동 수집만 실시간(파일 감시 → Tauri 이벤트). 요약 문서는 사용자가 "지금 일지 만들기"를 눌렀을 때만 |
 | 정해진 시각 | 설정에서 "알림만"(기본) / "자동 생성" 선택 |
-| 배포 | NSIS 설치기 + `tauri-plugin-updater` (`latest.json`, minisign 서명). 포터블 exe 도 산출(업데이터 없음) |
+| 배포 | NSIS 설치기 + `tauri-plugin-updater` (`latest.json`, minisign 서명). 산출물은 설치기 하나(포터블 exe 는 만들지 않음 — 8단계에서 확정) |
 | 저장 대상 | 설정에서 한 번 정하면 자동 저장. 편집한 일지는 "다시 생성" 시 확인 후에만 덮어씀 |
 
 와이어프레임: https://claude.ai/code/artifact/0fd2a292-d7de-4027-bd9d-a71e428a42c2
@@ -131,6 +131,7 @@ kv         (key PK, value)                                    -- 마지막 전�
 | 5 Tauri 셸 | 완료 (2026-09-14) | 상태·엔진 스레드·생성 작업·IPC 30개·플러그인 7종(단일 인스턴스·알림·자동 시작·전역 단축키·업데이터·대화상자·열기). 4관점 적대적 리뷰 22건 반영. 스모크: 시작 수집 3.0s(항목 26·저장소 92), 세션 로그 변경 → 피드 반영 50~100ms, 두 번째 실행 0.3~1.1s 만에 기존 창으로, 창 닫기 후 프로세스 상주(private 21MB · working set 114MB, gix mmap 포함), 재실행 시 창 재생성 확인. 알림 클릭→창 열림은 설치기(시작 메뉴 바로가기 AUMID) 뒤 7단계에서 확인 |
 | 6 UI | 완료 (2026-09-17) | SolidJS 세 화면(오늘·일지·설정) + 빠른 메모 창, 와이어프레임 A 기준. 공용 토큰/컴포넌트(`styles.css`, `components/ui.tsx`), 전역 상태(`store.ts`), 브라우저 미리보기용 가짜 백엔드(`mock.ts`, Tauri 밖에서 자동 사용). 화면별 병렬 구현(opus) → 3관점 리뷰 24건 → 수정 → 검증. 미리보기에서 메모 추가/편집, 생성 진행·완료 후 일지 자동 이동, 일지 편집·저장, 설정 즉시 저장, 다크 모드 확인 |
 | 7 배포 | 진행 중 | 서명키 생성(`~/.tauri/worklog.key`, 비밀번호 없음 · 공개키는 `tauri.conf.json` `plugins.updater.pubkey`), `createUpdaterArtifacts: true`, `.github/workflows/release.yml`(태그 `v*` → tauri-action → NSIS + `latest.json` + `.sig`). 남은 것: GitHub secrets(`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`=빈 값) 등록 → 태그 푸시 → 이전 버전에서 업데이트 확인 |
+| 8 컷오버 | 완료 (2026-09-17) | Python v1(패키지·테스트·PyInstaller 스펙·`releases/`)·`pyproject`·`uv.lock`·`config.example.yaml`·`.env.example` 삭제(49 파일), `.gitignore` 정리, README 를 v2 기준으로 재작성. 코어 테스트 121개·프런트 빌드 통과. 남은 것은 7단계의 사용자 몫(secrets 등록 → `v0.2.0` 태그 푸시) |
 
 ### UI 결정 사항(6단계에서 확정)
 - **지난 날짜 타임라인**(2026-09-17): Claude Code 가 기본 30일 뒤 세션 기록을 지우므로, 엔진이 오늘 피드를 SQLite `day_feeds` 에 하루 단위 스냅샷으로 저장(갱신마다, 폭주 시 30초 간격, 날짜 넘김 직전 최종본; 저장본과 합쳐 사라진 항목은 `archived`). `feed_for(date, recollect)` — 오늘은 실시간, 지난 날짜는 저장본(메모는 DB 에서 새로) 또는 재수집 후 병합. 오늘 탭 헤더에 ‹ › · 달력 · 오늘 버튼, 지난 날짜 메모는 `note_add(at)` 로 그 날짜에 기록.
