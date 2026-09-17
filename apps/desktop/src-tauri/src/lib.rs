@@ -40,6 +40,38 @@ pub fn run() {
 
     let minimized = std::env::args().any(|a| a == "--minimized");
 
+    // 설정 · 저장소 — 반드시 빌더보다 먼저.
+    // `build()` 는 tauri.conf.json 의 창을 `setup` 보다 먼저 만들기 때문에, 웹뷰가
+    // `State<AppState>` 를 받는 커맨드(feed_today · app_info · settings_get)를 곧바로
+    // 부른다. setup 안에서 manage 하면 그 사이에 "state not found" 가 난다.
+    let loaded = Config::load_with_status();
+    match &loaded.status {
+        LoadStatus::Loaded => {}
+        LoadStatus::Missing => tracing::info!(
+            "설정 파일 없음 — 기본값으로 시작: {}",
+            paths::settings_path().display()
+        ),
+        LoadStatus::CorruptedBackedUp(e) => {
+            tracing::warn!("설정 파일 손상(.json.bak 으로 보관) — 기본값으로 시작: {e}")
+        }
+        LoadStatus::ReadFailed(e) => {
+            tracing::error!("설정 파일 읽기 실패 — 저장을 막습니다: {e}")
+        }
+    }
+    let mut cfg = loaded.config;
+    cfg.normalize();
+    let store = Store::open(&paths::db_path()).map_err(|e| e.to_string());
+    match &store {
+        Ok(s) => abandon_stale_runs(s),
+        Err(e) => tracing::error!(
+            "메모 저장소 열기 실패({}): {e}",
+            paths::db_path().display()
+        ),
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let state = AppState::new(cfg.clone(), loaded.status, store, tx.clone());
+
     let app = tauri::Builder::default()
         // 반드시 첫 플러그인: 두 번째 인스턴스는 여기서 기존 창을 띄우고 바로 끝난다.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -63,6 +95,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // 창이 setup 전에 만들어지므로 상태는 build() 전에 등록해 둔다.
+        .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::app_version,
@@ -98,35 +132,7 @@ pub fn run() {
             commands::quick_hide,
         ])
         .setup(move |app| {
-            // 설정 · 저장소
-            let loaded = Config::load_with_status();
-            match &loaded.status {
-                LoadStatus::Loaded => {}
-                LoadStatus::Missing => tracing::info!(
-                    "설정 파일 없음 — 기본값으로 시작: {}",
-                    paths::settings_path().display()
-                ),
-                LoadStatus::CorruptedBackedUp(e) => {
-                    tracing::warn!("설정 파일 손상(.json.bak 으로 보관) — 기본값으로 시작: {e}")
-                }
-                LoadStatus::ReadFailed(e) => {
-                    tracing::error!("설정 파일 읽기 실패 — 저장을 막습니다: {e}")
-                }
-            }
-            let mut cfg = loaded.config;
-            cfg.normalize();
-            let store = Store::open(&paths::db_path()).map_err(|e| e.to_string());
-            match &store {
-                Ok(s) => abandon_stale_runs(s),
-                Err(e) => tracing::error!(
-                    "메모 저장소 열기 실패({}): {e}",
-                    paths::db_path().display()
-                ),
-            }
-
-            let (tx, rx) = mpsc::channel();
-            app.manage(AppState::new(cfg.clone(), loaded.status, store, tx.clone()));
-
+            // AppHandle 이 필요한 것만 남긴다(상태는 위에서 이미 등록).
             shell::build_tray(app)?;
             let handle = app.handle().clone();
             if let Err(e) = shell::apply_shortcut(&handle, "", &cfg.automation.global_shortcut) {
