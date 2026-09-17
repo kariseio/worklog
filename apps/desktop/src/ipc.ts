@@ -29,6 +29,8 @@ export interface FeedItem {
   note_id: number | null;
   tags: string[];
   mentions: string[];
+  /** 저장된 기록에만 남은 항목 — 원본(세션 로그·커밋)이 더 이상 없다. */
+  archived: boolean;
 }
 
 export interface FeedKpis {
@@ -48,6 +50,9 @@ export interface SourceStatus {
   note: string | null;
 }
 
+/** 피드를 어디서 얻었는지. live=오늘 엔진 스냅샷, stored=day_feeds 에서 읽음, collected=방금 다시 수집. */
+export type FeedSource = "live" | "stored" | "collected";
+
 export interface Feed {
   date: string;
   tz_name: string;
@@ -57,6 +62,9 @@ export interface Feed {
   warnings: string[];
   built_at: string;
   last_event_at: string | null;
+  source: FeedSource;
+  /** 저장된 기록을 마지막으로 쓴 시각. live 면 null. */
+  stored_at: string | null;
 }
 
 export interface FeedDelta {
@@ -307,11 +315,14 @@ const tauriApi = {
   appQuit: () => invoke<void>("app_quit"),
 
   feedToday: () => invoke<Feed | null>("feed_today"),
+  /** 특정 날짜의 피드. 오늘이면 실시간 스냅샷, 지난 날짜면 저장된 기록(없거나 recollect 면 원본에서 다시 수집). */
+  feedFor: (date: string, recollect = false) => invoke<Feed>("feed_for", { date, recollect }),
   refreshNow: () => invoke<void>("refresh_now"),
   refreshCalendar: () => invoke<void>("refresh_calendar"),
   rescanRepos: () => invoke<void>("rescan_repos"),
 
-  noteAdd: (text: string, source?: string) => invoke<Note>("note_add", { text, source }),
+  /** at: RFC3339 시각(선택) — 주면 그 시각(=그 날짜)으로 메모를 남긴다. */
+  noteAdd: (text: string, source?: string, at?: string) => invoke<Note>("note_add", { text, source, at }),
   noteEdit: (id: number, text: string) => invoke<boolean>("note_edit", { id, text }),
   noteDelete: (id: number) => invoke<boolean>("note_delete", { id }),
   notesFor: (date?: string) => invoke<Note[]>("notes_for", { date }),

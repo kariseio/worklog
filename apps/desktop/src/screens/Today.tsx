@@ -1,25 +1,33 @@
 // 오늘 화면 — 실시간 피드(자동 수집 + 메모 한 줄기) · 지표 · 생성 진행 · 메모 입력. 와이어프레임 A(피드형).
-import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, untrack } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, untrack } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import "./today.css";
 import { Button, Chip, Empty, Icon, Pill, Spinner } from "../components/ui";
 import { api, type Config, type FeedItem, type GenStatus, type SourceStatus } from "../ipc";
 import {
   cancelGenerate,
+  displayFeed,
   errText,
   feed,
   genProgressRatio,
   generating,
   gotoJournal,
   gotoSettings,
+  isToday,
   lastDone,
+  refetchViewFeed,
   refreshNow,
   refreshing,
+  setViewDate,
   settings,
   startGenerate,
   toast,
+  viewDate,
+  viewError,
+  viewFeed,
+  viewLoading,
 } from "../store";
-import { daypart, fmtDateLong, fmtTime, todayStr } from "../util";
+import { daypart, fmtDateLong, fmtTime, parseDate, toDateStr, todayStr } from "../util";
 
 const KIND_LABEL: Record<string, string> = { session: "세션", commit: "커밋", meeting: "회의", note: "메모" };
 const SOURCE_LABEL: Record<string, string> = { git: "git", claude: "Claude", codex: "Codex", naverworks: "회의" };
@@ -60,10 +68,37 @@ function isComposingEnter(e: KeyboardEvent): boolean {
   return e.isComposing || e.keyCode === 229;
 }
 
+/** "2026-09-14" 에서 며칠 옮긴 날짜. */
+function shiftDay(day: string, delta: number): string {
+  const d = parseDate(day);
+  d.setDate(d.getDate() + delta);
+  return toDateStr(d);
+}
+
+/** 지난 날짜 + 지금 시각 → ISO. 메모를 그 날짜 기록으로 남기는 데 쓴다. */
+function atOnDay(day: string): string {
+  const [y, m, d] = day.split("-").map(Number);
+  const n = new Date();
+  return new Date(y, m - 1, d, n.getHours(), n.getMinutes(), n.getSeconds()).toISOString();
+}
+
+/** "2026-09-14" → "9월 14일". */
+function monthDay(day: string): string {
+  const d = parseDate(day);
+  return `${d.getMonth() + 1}월 ${d.getDate()}일`;
+}
+
+/** 글자를 치는 중이면 날짜 이동 단축키를 무시한다. */
+function isTyping(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  if (!el || !el.tagName) return false;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
+}
+
 // ---- 화면 -------------------------------------------------------------------- //
 
 export default function Today() {
-  const date = () => feed()?.date ?? todayStr();
+  const date = () => viewDate() ?? feed()?.date ?? todayStr();
   const realtime = () => settings()?.config.automation.realtime.enabled ?? false;
   const shortcut = () => settings()?.config.automation.global_shortcut ?? "";
 
@@ -77,11 +112,29 @@ export default function Today() {
   // 메모 입력창 내용 — 생성 완료 후 자동 이동 여부 판단에 쓰므로 화면 수준에 둔다.
   const [composerText, setComposerText] = createSignal("");
 
+  // 날짜 이동 — ‹ › · 달력 · '오늘'. Alt+←/→ 도 같은 동작.
+  const [pickOpen, setPickOpen] = createSignal(false);
+  const goPrev = () => setViewDate(shiftDay(date(), -1));
+  const goNext = () => {
+    if (!isToday()) setViewDate(shiftDay(date(), 1));
+  };
+  const goToday = () => setViewDate(null);
+  const onKey = (e: KeyboardEvent) => {
+    if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    if (isTyping(e.target)) return;
+    e.preventDefault();
+    if (e.key === "ArrowLeft") goPrev();
+    else goNext();
+  };
+  window.addEventListener("keydown", onKey);
+  onCleanup(() => window.removeEventListener("keydown", onKey));
+
   // 이 화면에서 사용자가 직접 시작한 생성(run_id)만 끝나면 '일지'로 자동 이동한다.
   // 정해진 시각 자동 생성·다른 창에서 시작한 실행은 토스트로만 알린다(읽는 도중 화면이 바뀌지 않게).
   const startedHere = new Set<number>();
   const generateHere = async () => {
-    const id = await startGenerate();
+    const id = await startGenerate(isToday() ? undefined : (viewDate() ?? undefined));
     if (id != null) startedHere.add(id);
   };
 
@@ -115,10 +168,10 @@ export default function Today() {
   // 필터 · 경고
   const [onlyMemo, setOnlyMemo] = createSignal(false);
   const [showWarn, setShowWarn] = createSignal(false);
-  const warnings = () => feed()?.warnings ?? [];
+  const warnings = () => displayFeed()?.warnings ?? [];
 
   const badStatuses = createMemo<SourceStatus[]>(() =>
-    (feed()?.statuses ?? []).filter((s) => s.state === "skipped" || s.state === "error"),
+    (displayFeed()?.statuses ?? []).filter((s) => s.state === "skipped" || s.state === "error"),
   );
 
   // 메모 인라인 수정 상태 — feed:changed 마다 행이 새로 그려져도 잃지 않도록 화면 수준에 둔다.
@@ -128,8 +181,9 @@ export default function Today() {
 
   // 피드 항목은 id 로 맞춰 넣어(reconcile) 바뀌지 않은 행의 객체를 그대로 쓴다 → <For> 가 행을 재사용한다.
   const [items, setItems] = createStore<{ list: FeedItem[] }>({ list: [] });
+  // 지난 날짜를 보는 중이면 실시간 이벤트(feed:changed)는 화면에 닿지 않는다 — displayFeed 가 viewFeed 를 가리킨다.
   createEffect(() => {
-    const list = feed()?.items ?? [];
+    const list = displayFeed()?.items ?? [];
     setItems("list", reconcile(list, { key: "id" }));
     // 수정 중이던 메모가 사라졌으면(다른 창에서 삭제 등) 수정 상태를 접는다.
     const id = untrack(editId);
@@ -163,6 +217,7 @@ export default function Today() {
     try {
       await api.noteEdit(id, text);
       setEditId(null);
+      if (!isToday()) refetchViewFeed(false);
     } catch (e) {
       toast(errText(e), "error");
     } finally {
@@ -176,6 +231,7 @@ export default function Today() {
     try {
       await api.noteDelete(id);
       if (editId() === id) setEditId(null);
+      if (!isToday()) refetchViewFeed(false);
     } catch (e) {
       toast(errText(e), "error");
     }
@@ -210,18 +266,93 @@ export default function Today() {
     return t ? `${base} · 마지막 이벤트 ${t}` : base;
   };
 
-  const emptyHint = () =>
+  /** 지난 날짜의 상태 줄: "저장된 기록 · 18:42 갱신" 또는 "방금 수집". */
+  const storedText = () => {
+    const f = displayFeed();
+    if (!f) return "저장된 기록";
+    if (f.source === "collected") return "방금 수집";
+    const t = fmtTime(f.stored_at);
+    return t ? `저장된 기록 · ${t} 갱신` : "저장된 기록";
+  };
+
+  const emptyTitle = () =>
     onlyMemo()
-      ? "아래 입력창에 구두 요청 · 결정 · 할 일을 적어두세요"
-      : realtime()
-        ? "실시간 감시가 켜져 있어요 — 세션·커밋은 저절로 나타납니다. '지금 갱신'으로 바로 확인할 수도 있어요"
-        : "실시간 감시가 꺼져 있어요 — 설정 · 자동화에서 켜거나 '지금 갱신'을 눌러 수집하세요";
+      ? isToday()
+        ? "오늘 적은 메모가 없어요"
+        : "그날 적은 메모가 없어요"
+      : isToday()
+        ? "아직 수집된 활동이 없어요"
+        : "그날 기록이 없어요";
+
+  const emptyHint = () =>
+    !isToday()
+      ? onlyMemo()
+        ? "아래 입력창에 적으면 그 날짜 기록으로 저장됩니다"
+        : "'다시 읽기'를 누르면 원본(세션 로그 · git)을 한 번 더 훑습니다"
+      : onlyMemo()
+        ? "아래 입력창에 구두 요청 · 결정 · 할 일을 적어두세요"
+        : realtime()
+          ? "실시간 감시가 켜져 있어요 — 세션·커밋은 저절로 나타납니다. '지금 갱신'으로 바로 확인할 수도 있어요"
+          : "실시간 감시가 꺼져 있어요 — 설정 · 자동화에서 켜거나 '지금 갱신'을 눌러 수집하세요";
 
   return (
     <section class="screen today">
       <header class="screen-header">
-        <span class="screen-title">오늘</span>
-        <span class="today-header-date">{fmtDateLong(date())}</span>
+        <Show
+          when={isToday()}
+          fallback={
+            <>
+              <span class="screen-title">{fmtDateLong(date())}</span>
+              <Pill tone="muted" class="today-past-pill">지난 날짜</Pill>
+            </>
+          }
+        >
+          <span class="screen-title">오늘</span>
+          <span class="today-header-date">{fmtDateLong(date())}</span>
+        </Show>
+
+        <div class="today-datenav">
+          <Button variant="ghost" size="sm" class="today-navbtn" icon="left" aria-label="전날" title="전날 (Alt+←)" onClick={goPrev} />
+          <Button
+            variant="ghost"
+            size="sm"
+            class="today-navbtn"
+            icon="right"
+            aria-label="다음날"
+            title="다음날 (Alt+→)"
+            disabled={isToday()}
+            onClick={goNext}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            class="today-navbtn"
+            icon="cal"
+            aria-label="날짜 고르기"
+            title="날짜 고르기"
+            aria-pressed={pickOpen()}
+            onClick={() => setPickOpen((v) => !v)}
+          />
+          <Show when={pickOpen()}>
+            <input
+              type="date"
+              class="input today-dateinput"
+              aria-label="날짜 고르기"
+              max={todayStr()}
+              value={date()}
+              ref={(el) => requestAnimationFrame(() => el.focus())}
+              onChange={(e) => {
+                const v = e.currentTarget.value;
+                if (v) setViewDate(v);
+                setPickOpen(false);
+              }}
+            />
+          </Show>
+          <Show when={!isToday()}>
+            <Button size="sm" onClick={goToday}>오늘</Button>
+          </Show>
+        </div>
+
         <span class="grow" />
         <Show when={settings()}>
           <button type="button" class="today-sched" onClick={() => gotoSettings("automation")} title="설정 · 자동화">
@@ -233,7 +364,14 @@ export default function Today() {
             </Pill>
           </button>
         </Show>
-        <Show when={generating()} fallback={<Button variant="primary" icon="bolt" onClick={() => void generateHere()}>지금 일지 만들기</Button>}>
+        <Show
+          when={generating()}
+          fallback={
+            <Button variant="primary" icon="bolt" onClick={() => void generateHere()}>
+              {isToday() ? "지금 일지 만들기" : "이 날짜로 만들기"}
+            </Button>
+          }
+        >
           <Button loading disabled>
             생성 중…
           </Button>
@@ -254,19 +392,19 @@ export default function Today() {
 
       <div class="today-kpis">
         <span class="kpi">
-          <b>{feed()?.kpis.commits ?? 0}</b>
+          <b>{displayFeed()?.kpis.commits ?? 0}</b>
           <span class="small muted">커밋</span>
         </span>
         <span class="kpi">
-          <b>{feed()?.kpis.sessions ?? 0}</b>
+          <b>{displayFeed()?.kpis.sessions ?? 0}</b>
           <span class="small muted">AI 세션</span>
         </span>
         <span class="kpi">
-          <b>{feed()?.kpis.meetings ?? 0}</b>
+          <b>{displayFeed()?.kpis.meetings ?? 0}</b>
           <span class="small muted">회의</span>
         </span>
         <span class="kpi kpi-memo">
-          <b>{feed()?.kpis.notes ?? 0}</b>
+          <b>{displayFeed()?.kpis.notes ?? 0}</b>
           <span class="small">메모</span>
         </span>
         <For each={badStatuses()}>
@@ -277,13 +415,33 @@ export default function Today() {
           )}
         </For>
         <span class="grow" />
-        <span class="today-live small">
-          <span class={`dot ${realtime() ? "dot-live" : "dot-idle"}`} />
-          <span class="today-live-text">{liveText()}</span>
-        </span>
-        <Button icon="refresh" loading={refreshing()} onClick={() => void refreshNow()}>
-          지금 갱신
-        </Button>
+        <Show
+          when={isToday()}
+          fallback={
+            <>
+              <span class="today-live small">
+                <span class="dot dot-idle" />
+                <span class="today-live-text">{storedText()}</span>
+              </span>
+              <Button
+                icon="refresh"
+                loading={viewLoading()}
+                title="원본(세션 로그·git)을 다시 읽습니다 — 지워진 세션은 저장된 기록으로 남습니다"
+                onClick={() => refetchViewFeed(true)}
+              >
+                다시 읽기
+              </Button>
+            </>
+          }
+        >
+          <span class="today-live small">
+            <span class={`dot ${realtime() ? "dot-live" : "dot-idle"}`} />
+            <span class="today-live-text">{liveText()}</span>
+          </span>
+          <Button icon="refresh" loading={refreshing()} onClick={() => void refreshNow()}>
+            지금 갱신
+          </Button>
+        </Show>
       </div>
 
       <Show when={generating()}>
@@ -319,58 +477,95 @@ export default function Today() {
       </div>
 
       <div class="scroll grow today-body" ref={bodyEl} onScroll={onScroll}>
-        <Show when={feed()} fallback={<div class="today-loading"><Spinner size={20} /></div>}>
-          <div class={`today-feed ${generating() ? "is-dim" : ""}`}>
-            <Show
-              when={visibleItems().length > 0}
-              fallback={<Empty icon={onlyMemo() ? "note" : "today"} title={onlyMemo() ? "오늘 적은 메모가 없어요" : "아직 수집된 활동이 없어요"} hint={emptyHint()} />}
-            >
-              {/* 행 단위 <For>(항목 객체가 안정적이라 재사용됨). 구분선은 앞 항목과 시간대가 다를 때 행 앞에 붙인다. */}
-              <For each={visibleItems()}>
-                {(it, i) => {
-                  const part = () => partOf(it);
-                  const sep = () => {
-                    const idx = i();
-                    if (idx === 0) return true;
-                    const prev = visibleItems()[idx - 1];
-                    return !prev || partOf(prev) !== part();
-                  };
-                  return (
-                    <>
-                      <Show when={sep()}>
-                        <div class="today-sep">
-                          <span>{part()}</span>
-                          <span class="today-sep-line" />
-                        </div>
-                      </Show>
-                      <Show when={it.kind === "note"} fallback={<EventRow item={it} />}>
-                        <MemoRow
-                          item={it}
-                          editing={editId() != null && editId() === it.note_id}
-                          draft={draft()}
-                          busy={editBusy()}
-                          onDraft={setDraft}
-                          onBegin={() => beginEdit(it)}
-                          onSave={() => void saveEdit(it)}
-                          onCancel={cancelEdit}
-                          onRemove={() => void removeNote(it)}
-                        />
-                      </Show>
-                    </>
-                  );
-                }}
-              </For>
-              <div class="today-sep">
-                <span class="today-sep-line" />
-                <span>지금 {now()}</span>
-                <span class="today-sep-line" />
+        <Switch fallback={<div class="today-loading"><Spinner size={20} /></div>}>
+          <Match when={!isToday() && viewLoading() && !viewFeed()}>
+            <div class="today-loading small muted">
+              <Spinner size={16} />
+              <span>그날 기록을 읽는 중…</span>
+            </div>
+          </Match>
+          <Match when={!isToday() && viewError() && !viewFeed()}>
+            {(msg) => (
+              <div class="today-error">
+                <Icon name="alert" size={16} />
+                <span class="today-error-text">{msg()}</span>
+                <Button size="sm" icon="refresh" onClick={() => refetchViewFeed(false)}>
+                  다시 시도
+                </Button>
               </div>
-            </Show>
-          </div>
-        </Show>
+            )}
+          </Match>
+          <Match when={displayFeed()}>
+            <div class={`today-feed ${generating() ? "is-dim" : ""}`}>
+              <Show when={!isToday() && viewError()}>
+                {(msg) => (
+                  <div class="today-error">
+                    <Icon name="alert" size={16} />
+                    <span class="today-error-text">다시 읽기 실패 · {msg()} — 저장된 기록을 보여 줍니다</span>
+                  </div>
+                )}
+              </Show>
+              <Show
+                when={visibleItems().length > 0}
+                fallback={<Empty icon={onlyMemo() ? "note" : "today"} title={emptyTitle()} hint={emptyHint()} />}
+              >
+                {/* 행 단위 <For>(항목 객체가 안정적이라 재사용됨). 구분선은 앞 항목과 시간대가 다를 때 행 앞에 붙인다. */}
+                <For each={visibleItems()}>
+                  {(it, i) => {
+                    const part = () => partOf(it);
+                    const sep = () => {
+                      const idx = i();
+                      if (idx === 0) return true;
+                      const prev = visibleItems()[idx - 1];
+                      return !prev || partOf(prev) !== part();
+                    };
+                    return (
+                      <>
+                        <Show when={sep()}>
+                          <div class="today-sep">
+                            <span>{part()}</span>
+                            <span class="today-sep-line" />
+                          </div>
+                        </Show>
+                        <Show when={it.kind === "note"} fallback={<EventRow item={it} />}>
+                          <MemoRow
+                            item={it}
+                            editing={editId() != null && editId() === it.note_id}
+                            draft={draft()}
+                            busy={editBusy()}
+                            onDraft={setDraft}
+                            onBegin={() => beginEdit(it)}
+                            onSave={() => void saveEdit(it)}
+                            onCancel={cancelEdit}
+                            onRemove={() => void removeNote(it)}
+                          />
+                        </Show>
+                      </>
+                    );
+                  }}
+                </For>
+                <Show when={isToday()}>
+                  <div class="today-sep">
+                    <span class="today-sep-line" />
+                    <span>지금 {now()}</span>
+                    <span class="today-sep-line" />
+                  </div>
+                </Show>
+              </Show>
+            </div>
+          </Match>
+        </Switch>
       </div>
 
-      <Composer shortcut={shortcut()} text={composerText()} onText={setComposerText} />
+      <Composer
+        shortcut={shortcut()}
+        text={composerText()}
+        onText={setComposerText}
+        pastDate={isToday() ? null : date()}
+        onSaved={() => {
+          if (!isToday()) refetchViewFeed(false);
+        }}
+      />
     </section>
   );
 }
@@ -462,7 +657,7 @@ function EventRow(props: { item: FeedItem }) {
   return (
     <div class="today-row">
       <span class="today-tm">{props.item.time}</span>
-      <div class={`today-ev ${props.item.active ? "is-active" : ""}`}>
+      <div class={`today-ev ${props.item.active ? "is-active" : ""} ${props.item.archived ? "is-archived" : ""}`}>
         <Icon name={props.item.kind} size={18} />
         <div class="today-ev-body">
           <div class="today-ev-title">
@@ -470,6 +665,12 @@ function EventRow(props: { item: FeedItem }) {
             <Show when={props.item.project}>{(p) => <> · <b>{p()}</b></>}</Show>
             {" — "}
             {props.item.label}
+            <Show when={props.item.archived}>
+              {" "}
+              <span class="today-arch" title="원본 파일이 더 이상 없어 저장된 기록으로 표시">
+                기록만 남음
+              </span>
+            </Show>
           </div>
           <div class="today-ev-detail small muted">
             <Show when={props.item.active}>
@@ -573,8 +774,17 @@ function MemoRow(props: {
 
 // ---- 메모 입력 ------------------------------------------------------------------ //
 
-/** 메모 입력. 내용(text)은 부모가 들고 있다(생성 완료 후 자동 이동 판단에 씀). */
-function Composer(props: { shortcut: string; text: string; onText: (v: string) => void }) {
+/**
+ * 메모 입력. 내용(text)은 부모가 들고 있다(생성 완료 후 자동 이동 판단에 씀).
+ * pastDate 가 있으면 그 날짜 + 지금 시각으로 메모를 남긴다.
+ */
+function Composer(props: {
+  shortcut: string;
+  text: string;
+  onText: (v: string) => void;
+  pastDate: string | null;
+  onSaved: () => void;
+}) {
   const [saving, setSaving] = createSignal(false);
   let inputEl!: HTMLTextAreaElement;
 
@@ -597,8 +807,11 @@ function Composer(props: { shortcut: string; text: string; onText: (v: string) =
     const t = props.text.trim();
     setSaving(true);
     try {
-      await api.noteAdd(t);
+      const d = props.pastDate;
+      if (d) await api.noteAdd(t, "app", atOnDay(d));
+      else await api.noteAdd(t);
       setValue("");
+      props.onSaved();
     } catch (e) {
       toast(errText(e), "error");
     } finally {
@@ -638,16 +851,28 @@ function Composer(props: { shortcut: string; text: string; onText: (v: string) =
       </div>
       <div class="today-composer-hint small muted">
         <Show
-          when={generating()}
+          when={props.pastDate}
           fallback={
-            <span>
-              Enter 저장 · Shift+Enter 줄바꿈 · 트레이 메뉴 '빠른 메모'로 어디서든
-              {props.shortcut ? ` (단축키 ${props.shortcut})` : ""}
-            </span>
+            <Show
+              when={generating()}
+              fallback={
+                <span>
+                  Enter 저장 · Shift+Enter 줄바꿈 · 트레이 메뉴 '빠른 메모'로 어디서든
+                  {props.shortcut ? ` (단축키 ${props.shortcut})` : ""}
+                </span>
+              }
+            >
+              <span class="today-ydot" aria-hidden="true" />
+              <span>생성 중에도 메모할 수 있어요 — 지금 추가한 메모는 다음 생성에 반영됩니다</span>
+            </Show>
           }
         >
-          <span class="today-ydot" aria-hidden="true" />
-          <span>생성 중에도 메모할 수 있어요 — 지금 추가한 메모는 다음 생성에 반영됩니다</span>
+          {(d) => (
+            <>
+              <span class="today-ydot" aria-hidden="true" />
+              <span>{monthDay(d())} 기록으로 저장됩니다</span>
+            </>
+          )}
         </Show>
       </div>
     </div>

@@ -7,6 +7,7 @@ import {
   feed,
   genProgressRatio,
   generating,
+  gotoDay,
   info,
   journalDate,
   lastDone,
@@ -792,6 +793,15 @@ export default function Journal() {
                     )}
                   </Show>
                   <span class="grow" />
+                  <Button
+                    variant="ghost"
+                    icon="today"
+                    title="그날 활동 보기"
+                    aria-label="그날 활동 보기"
+                    onClick={() => gotoDay(sel())}
+                  >
+                    <span class="journal-btn-label">그날 활동 보기</span>
+                  </Button>
                   <Show when={cur()}>
                     <Button
                       icon="edit"

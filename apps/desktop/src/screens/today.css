@@ -249,9 +249,31 @@
 
 .today-loading {
   display: flex;
+  align-items: center;
   justify-content: center;
+  gap: 8px;
   padding: 40px;
   color: var(--muted);
+}
+
+/* 지난 날짜를 읽지 못했을 때 */
+.today-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border: var(--bw) dashed var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 10px 12px;
+  color: var(--warn);
+}
+
+.today-error-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  user-select: text;
 }
 
 .today-sep {
@@ -314,6 +336,26 @@
 .today-ev.is-active {
   background: var(--active);
   border-color: var(--line);
+}
+
+/* 원본이 사라져 저장된 기록으로만 남은 항목 — 점선 + 살짝 흐리게. */
+.today-ev.is-archived {
+  opacity: 0.8;
+  border-style: dashed;
+  border-color: var(--line-soft);
+}
+
+.today-arch {
+  display: inline-flex;
+  align-items: center;
+  border: var(--bw) dashed var(--line-soft);
+  border-radius: var(--radius-pill);
+  padding: 0 7px;
+  margin-left: 4px;
+  font-size: 0.8125rem;
+  color: var(--muted);
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .today-ev-body {
@@ -470,4 +512,40 @@
   border: var(--bw) solid var(--line);
   display: inline-block;
   flex: none;
+}
+
+/* ---- 날짜 이동(지난 날짜 타임라인) --------------------------------------------- */
+
+/* 제목 옆 '지난 날짜' 필 — Pill muted 가 이미 점선이라 크기만 손본다. */
+.today-past-pill {
+  font-size: 0.8125rem;
+  padding: 1px 8px;
+}
+
+.today-datenav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+/* ‹ › 달력 — 글자 없는 고스트 아이콘 버튼. */
+.today-navbtn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
+.today-navbtn[aria-pressed="true"] {
+  background: var(--line-faint);
+}
+
+/* 달력 버튼이 펼치는 날짜 입력 — .input 과 같은 종이·잉크, 한 줄에 들어가게 좁게. */
+.today-dateinput {
+  height: 28px;
+  margin-left: 4px;
+  padding: 2px 6px;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
 }

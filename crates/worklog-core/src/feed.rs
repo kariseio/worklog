@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     collect::SourceStatus,
-    model::{DailyData, Session},
+    model::{DailyData, NoteItem, Session},
     render::is_meta_session,
     time::{fmt_time, parse_iso_in},
 };
@@ -59,6 +59,10 @@ pub struct FeedItem {
     pub note_id: Option<i64>,
     pub tags: Vec<String>,
     pub mentions: Vec<String>,
+    /// 저장된 스냅샷에만 남은 항목 — 원본(세션 로그·커밋)이 더는 없다(예: Claude Code 가 30일
+    /// 보관 뒤 지운 세션 기록). [`merge_keep_missing`] 이 표시한다.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -83,6 +87,17 @@ pub struct Feed {
     pub built_at: DateTime<Utc>,
     /// 가장 최근 이벤트 시각(세션 마지막 활동·커밋·메모 중 최대).
     pub last_event_at: Option<DateTime<Utc>>,
+    /// 이 피드를 어디서 얻었는가. live=오늘 엔진 스냅샷 · stored=`day_feeds` 에서 읽음 ·
+    /// collected=방금 원본에서 다시 수집.
+    #[serde(default = "default_source")]
+    pub source: String,
+    /// 저장된 스냅샷을 마지막으로 쓴 시각. live 면 None.
+    #[serde(default)]
+    pub stored_at: Option<DateTime<Utc>>,
+}
+
+fn default_source() -> String {
+    "live".to_string()
 }
 
 fn session_item(s: &Session, tz: Tz, now: DateTime<Utc>) -> FeedItem {
@@ -119,7 +134,55 @@ fn session_item(s: &Session, tz: Tz, now: DateTime<Utc>) -> FeedItem {
         note_id: None,
         tags: Vec::new(),
         mentions: Vec::new(),
+        archived: false,
     }
+}
+
+/// 메모 한 줄 → 피드 항목.
+fn note_item(n: &NoteItem, tz: Tz) -> FeedItem {
+    FeedItem {
+        id: format!("n:{}", n.id),
+        kind: FeedKind::Note,
+        start: Some(n.ts),
+        end: None,
+        time: fmt_time(Some(&n.ts), tz),
+        end_time: None,
+        project: None,
+        label: n.text.clone(),
+        detail: Some(n.source.clone()),
+        agent: None,
+        files: 0,
+        insertions: 0,
+        deletions: 0,
+        active: false,
+        note_id: Some(n.id),
+        tags: n.tags.clone(),
+        mentions: n.mentions.clone(),
+        archived: false,
+    }
+}
+
+/// 그날 메모를 피드 항목으로(저장된 스냅샷의 메모를 갈아 끼울 때 쓴다).
+pub fn note_items(notes: &[NoteItem], tz: Tz) -> Vec<FeedItem> {
+    notes.iter().map(|n| note_item(n, tz)).collect()
+}
+
+/// 시간순(시각 없는 종일 회의는 맨 앞), 같은 시각이면 회의 → 세션 → 커밋 → 메모.
+fn sort_items(items: &mut [FeedItem]) {
+    items.sort_by_key(|i| (i.start.is_some(), i.start, i.kind.order()));
+}
+
+/// [`build`] 가 `last_event_at` 을 셀 때 보는 시각(회의는 세지 않는다).
+fn event_at(i: &FeedItem) -> Option<DateTime<Utc>> {
+    match i.kind {
+        FeedKind::Session => i.end,
+        FeedKind::Commit | FeedKind::Note => i.start,
+        FeedKind::Meeting => None,
+    }
+}
+
+fn last_event_of(items: &[FeedItem]) -> Option<DateTime<Utc>> {
+    items.iter().filter_map(event_at).max()
 }
 
 /// 수집 데이터 → 피드. `now` 는 '진행 중' 판정 기준.
@@ -173,6 +236,7 @@ pub fn build(data: &DailyData, statuses: &[SourceStatus], tz: Tz, now: DateTime<
                 note_id: None,
                 tags: Vec::new(),
                 mentions: Vec::new(),
+                archived: false,
             });
         }
     }
@@ -214,35 +278,17 @@ pub fn build(data: &DailyData, statuses: &[SourceStatus], tz: Tz, now: DateTime<
                 note_id: None,
                 tags: Vec::new(),
                 mentions: Vec::new(),
+                archived: false,
             });
         }
     }
     for n in &data.notes {
         kpis.notes += 1;
         bump(Some(n.ts));
-        items.push(FeedItem {
-            id: format!("n:{}", n.id),
-            kind: FeedKind::Note,
-            start: Some(n.ts),
-            end: None,
-            time: fmt_time(Some(&n.ts), tz),
-            end_time: None,
-            project: None,
-            label: n.text.clone(),
-            detail: Some(n.source.clone()),
-            agent: None,
-            files: 0,
-            insertions: 0,
-            deletions: 0,
-            active: false,
-            note_id: Some(n.id),
-            tags: n.tags.clone(),
-            mentions: n.mentions.clone(),
-        });
+        items.push(note_item(n, tz));
     }
 
-    // 시간순(시각 없는 종일 회의는 맨 앞), 같은 시각이면 회의 → 세션 → 커밋 → 메모.
-    items.sort_by_key(|i| (i.start.is_some(), i.start, i.kind.order()));
+    sort_items(&mut items);
     Feed {
         date: data.target_date,
         tz_name: data.tz_name.clone(),
@@ -252,7 +298,60 @@ pub fn build(data: &DailyData, statuses: &[SourceStatus], tz: Tz, now: DateTime<
         warnings: data.warnings.clone(),
         built_at: now,
         last_event_at: last_event,
+        source: default_source(),
+        stored_at: None,
     }
+}
+
+/// 피드의 메모를 통째로 갈아 끼운다(저장된 스냅샷 + 지금 메모 테이블). 정렬·메모 KPI·
+/// `last_event_at` 을 다시 계산한다.
+pub fn replace_notes(feed: &mut Feed, notes: Vec<FeedItem>) {
+    feed.items.retain(|i| i.kind != FeedKind::Note);
+    feed.items.extend(notes);
+    sort_items(&mut feed.items);
+    feed.kpis.notes = feed
+        .items
+        .iter()
+        .filter(|i| i.kind == FeedKind::Note)
+        .count() as u32;
+    feed.last_event_at = last_event_of(&feed.items);
+}
+
+/// 저장된 스냅샷(`stored`)과 방금 수집한 피드(`fresh`)를 합친다. `fresh` 가 기준이고, 원본이
+/// 사라져 이번 수집에 없는 예전 항목만 `archived` 로 붙여 남긴다(메모는 메모 테이블이 정본이라 뺀다).
+/// `source`·`stored_at` 은 부르는 쪽이 정한다.
+pub fn merge_keep_missing(stored: &Feed, fresh: &Feed) -> Feed {
+    let mut out = fresh.clone();
+    for old in &stored.items {
+        if old.kind == FeedKind::Note || out.items.iter().any(|n| n.id == old.id) {
+            continue;
+        }
+        out.items.push(FeedItem {
+            archived: true,
+            ..old.clone()
+        });
+    }
+    sort_items(&mut out.items);
+
+    let mut kpis = FeedKpis {
+        tokens: fresh.kpis.tokens, // 토큰은 세션 원본에만 있으므로 이번 수집 값을 쓴다.
+        ..Default::default()
+    };
+    for i in &out.items {
+        match i.kind {
+            FeedKind::Session => kpis.sessions += 1,
+            FeedKind::Commit => {
+                kpis.commits += 1;
+                kpis.insertions += i.insertions as u64;
+                kpis.deletions += i.deletions as u64;
+            }
+            FeedKind::Meeting => kpis.meetings += 1,
+            FeedKind::Note => kpis.notes += 1,
+        }
+    }
+    out.kpis = kpis;
+    out.last_event_at = last_event_of(&out.items);
+    out
 }
 
 /// 두 피드의 차이. UI 는 델타만 받아 갱신한다.
@@ -434,5 +533,130 @@ mod tests {
         assert_eq!(dl.kpis.notes, 2);
         assert!(!dl.is_empty());
         assert!(delta(&new, &new).is_empty());
+    }
+
+    fn note(id: i64, ts: &str, text: &str) -> NoteItem {
+        NoteItem {
+            id,
+            ts: parse_iso(ts).unwrap(),
+            text: text.into(),
+            tags: vec![],
+            mentions: vec![],
+            source: "app".into(),
+        }
+    }
+
+    #[test]
+    fn replace_notes_swaps_notes_and_recounts() {
+        let tz = get_tz("Asia/Seoul");
+        let now = parse_iso("2026-09-04T05:30:00Z").unwrap();
+        let mut f = build(&data(), &[], tz, now);
+        assert_eq!(f.kpis.notes, 1);
+        assert_eq!(f.source, "live");
+        assert_eq!(f.stored_at, None);
+
+        let fresh = vec![note(8, "2026-09-04T06:00:00Z", "새 메모")];
+        replace_notes(&mut f, note_items(&fresh, tz));
+        let ids: Vec<&str> = f.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "m:2026-09-04:휴가",
+                "m:2026-09-04T10:00:00:스프린트",
+                "c:D:/kms/.git:abcdef1234567890",
+                "s:s1",
+                "n:8" // 예전 메모 n:7 은 빠지고 새 메모가 제자리에 들어간다
+            ]
+        );
+        assert_eq!(f.items[4].label, "새 메모");
+        assert_eq!(f.items[4].time, "15:00"); // 06:00Z = 15:00 KST
+        assert!(!f.items[4].archived);
+        assert_eq!(f.kpis.notes, 1);
+        assert_eq!(f.last_event_at, parse_iso("2026-09-04T06:00:00Z")); // 메모가 가장 최근
+
+        replace_notes(&mut f, Vec::new());
+        assert!(!f.items.iter().any(|i| i.kind == FeedKind::Note));
+        assert_eq!(f.kpis.notes, 0);
+        assert_eq!(f.last_event_at, parse_iso("2026-09-04T05:25:00Z")); // 세션 마지막 활동으로 되돌아감
+        assert_eq!(f.kpis.commits, 1); // 나머지 KPI 는 그대로
+    }
+
+    #[test]
+    fn merge_keep_missing_marks_gone_items_and_recounts() {
+        let tz = get_tz("Asia/Seoul");
+        let now = parse_iso("2026-09-04T05:30:00Z").unwrap();
+        let stored = build(&data(), &[], tz, now);
+
+        let mut d2 = data();
+        d2.git.as_mut().unwrap().commits.clear(); // 원본 커밋이 더는 안 보인다
+        d2.claude.as_mut().unwrap().sessions[0].title = Some("바뀐 제목".into());
+        d2.claude.as_mut().unwrap().sessions[0].output_tokens = 3;
+        d2.notes.clear(); // 메모는 메모 테이블이 정본 — 스냅샷 것을 되살리지 않는다
+        d2.warnings.push("[git] 저장소 없음".into());
+        let fresh = build(&d2, &[], tz, now);
+
+        let m = merge_keep_missing(&stored, &fresh);
+        let ids: Vec<&str> = m.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "m:2026-09-04:휴가",
+                "m:2026-09-04T10:00:00:스프린트",
+                "c:D:/kms/.git:abcdef1234567890",
+                "s:s1"
+            ]
+        );
+        let commit = &m.items[2];
+        assert!(commit.archived); // 사라진 항목만 표식
+        assert_eq!(commit.insertions, 12);
+        let session = &m.items[3];
+        assert!(!session.archived);
+        assert_eq!(session.label, "바뀐 제목"); // 같은 id 는 새로 수집한 쪽이 이긴다
+        assert_eq!(
+            m.kpis,
+            FeedKpis {
+                commits: 1,
+                sessions: 1,
+                meetings: 2,
+                notes: 0,
+                tokens: 3, // 토큰은 새로 수집한 값
+                insertions: 12,
+                deletions: 4
+            }
+        );
+        assert_eq!(m.statuses, fresh.statuses);
+        assert_eq!(m.warnings, fresh.warnings);
+        assert_eq!(m.source, fresh.source); // source/stored_at 은 부르는 쪽 몫
+        assert_eq!(m.last_event_at, parse_iso("2026-09-04T05:25:00Z"));
+
+        // 같은 피드끼리 합치면 아무것도 archived 가 되지 않는다.
+        let same = merge_keep_missing(&fresh, &fresh);
+        assert!(same.items.iter().all(|i| !i.archived));
+        assert_eq!(same.items.len(), fresh.items.len());
+        assert_eq!(same.kpis, fresh.kpis);
+        // 델타는 항목 전체를 비교하므로 archived 가 붙은 것도 '바뀐 항목'으로 잡힌다.
+        let dl = delta(&stored, &m);
+        assert_eq!(
+            dl.updated.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            vec!["c:D:/kms/.git:abcdef1234567890", "s:s1"]
+        );
+        assert!(dl.added.is_empty());
+        assert_eq!(dl.removed, vec!["n:7"]);
+    }
+
+    #[test]
+    fn new_fields_have_serde_defaults() {
+        // 예전(v1) 스냅샷 JSON — source·stored_at·archived 가 없다.
+        let json = r#"{"date":"2026-09-04","tz_name":"Asia/Seoul","items":[{"id":"n:1",
+          "kind":"note","start":null,"end":null,"time":"09:00","end_time":null,"project":null,
+          "label":"메모","detail":null,"agent":null,"files":0,"insertions":0,"deletions":0,
+          "active":false,"note_id":1,"tags":[],"mentions":[]}],
+          "kpis":{"commits":0,"sessions":0,"meetings":0,"notes":1,"tokens":0,"insertions":0,
+          "deletions":0},"statuses":[],"warnings":[],"built_at":"2026-09-04T09:00:00Z",
+          "last_event_at":null}"#;
+        let f: Feed = serde_json::from_str(json).unwrap();
+        assert_eq!(f.source, "live");
+        assert_eq!(f.stored_at, None);
+        assert!(!f.items[0].archived);
     }
 }

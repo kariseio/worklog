@@ -2,6 +2,7 @@
 import { createSignal } from "solid-js";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { applyAppearance } from "./appearance";
+import { todayStr } from "./util";
 import {
   EDITED_PREFIX,
   api,
@@ -31,6 +32,16 @@ export const [feed, setFeed] = createSignal<Feed | null>(null);
 export const [refreshing, setRefreshing] = createSignal(false);
 /** 마지막 피드 갱신 사유(디버그·상태 표시). */
 export const [feedReason, setFeedReason] = createSignal("");
+
+// ---- 지난 날짜 보기 ------------------------------------------------------------- //
+// 오늘 화면은 기본으로 실시간 피드(feed)를 그린다. 지난 날짜를 고르면 그 날짜 피드를
+// feed_for 로 따로 받아 viewFeed 에 둔다 — 실시간 이벤트가 화면을 흔들지 않게 분리한다.
+
+/** 오늘 화면이 보고 있는 날짜. null = 오늘(실시간). */
+export const [viewDate, setViewDateSignal] = createSignal<string | null>(null);
+export const [viewFeed, setViewFeed] = createSignal<Feed | null>(null);
+export const [viewLoading, setViewLoading] = createSignal(false);
+export const [viewError, setViewError] = createSignal<string | null>(null);
 
 /** 진행 중인 생성. null 이면 없음. step 은 "수집" | "요약" | "저장" | "취소 중" | "준비". */
 export const [generating, setGenerating] = createSignal<GenStatus | null>(null);
@@ -75,6 +86,66 @@ export function errText(e: unknown): string {
 export function gotoJournal(date: string) {
   setJournalDate(date);
   setScreen("journal");
+}
+
+/** 지난 날짜 피드를 받아 온다. 늦게 온 응답은 버린다(날짜를 빠르게 넘길 때). */
+let viewSeq = 0;
+async function loadViewFeed(recollect: boolean) {
+  const d = viewDate();
+  if (!d) {
+    viewSeq++;
+    setViewFeed(null);
+    setViewError(null);
+    setViewLoading(false);
+    return;
+  }
+  const seq = ++viewSeq;
+  setViewLoading(true);
+  setViewError(null);
+  try {
+    const f = await api.feedFor(d, recollect);
+    if (seq !== viewSeq) return;
+    setViewFeed(f);
+  } catch (e) {
+    if (seq !== viewSeq) return;
+    setViewError(errText(e));
+  } finally {
+    if (seq === viewSeq) setViewLoading(false);
+  }
+}
+
+/** 보는 날짜 바꾸기. 오늘(또는 그 뒤)이면 null 로 되돌려 실시간 피드를 쓴다. */
+export function setViewDate(date: string | null) {
+  const t = feed()?.date ?? todayStr();
+  const next = !date || date >= t ? null : date;
+  if (next === viewDate()) return;
+  setViewDateSignal(next);
+  setViewFeed(null);
+  setViewError(null);
+  void loadViewFeed(false);
+}
+
+/** 보고 있는 날짜를 다시 읽는다. recollect=true 면 원본(세션 로그·git)에서 다시 수집. */
+export function refetchViewFeed(recollect = false) {
+  if (!viewDate()) return;
+  void loadViewFeed(recollect);
+}
+
+/** 화면에 그릴 피드 — 지난 날짜면 그 날짜 것, 아니면 실시간. */
+export function displayFeed(): Feed | null {
+  return viewDate() ? viewFeed() : feed();
+}
+
+/** 지금 보고 있는 것이 오늘인가. */
+export function isToday(): boolean {
+  const d = viewDate();
+  return !d || d === (feed()?.date ?? todayStr());
+}
+
+/** 그 날짜의 활동을 오늘 화면에서 연다(일지 화면의 '그날 활동 보기'). */
+export function gotoDay(date: string) {
+  setViewDate(date);
+  setScreen("today");
 }
 
 export function gotoSettings(tab?: string) {
@@ -172,6 +243,8 @@ export function initStore(): () => void {
       on("feed:changed", (p) => {
         setFeed(p.feed);
         setFeedReason(p.reason);
+        // 날짜가 넘어가 보고 있던 날짜가 더는 '지난 날짜'가 아니면 실시간 피드로 되돌린다.
+        if (viewDate() && viewDate()! >= p.feed.date) setViewDate(null);
       }),
       on("feed:refreshing", setRefreshing),
       on("generate:progress", (p) => {

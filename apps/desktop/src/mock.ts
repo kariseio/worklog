@@ -47,6 +47,17 @@ const shift = (n: number) => {
   d.setDate(d.getDate() + n);
   return dateStr(d);
 };
+/** "YYYY-MM-DD" + 시:분 → ISO(로컬 기준). */
+const atOn = (day: string, hh: number, mm: number) => {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(y, m - 1, d, hh, mm, 0, 0).toISOString();
+};
+/** 오늘로부터 며칠 전인지. */
+const daysAgo = (day: string) => {
+  const [y, m, d] = day.split("-").map(Number);
+  const a = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  return Math.round((a - new Date(y, m - 1, d).getTime()) / 86_400_000);
+};
 
 let noteSeq = 4;
 const notes: Note[] = [
@@ -58,11 +69,11 @@ const notes: Note[] = [
 function mkNote(id: number, ts: string, text: string, source: string): Note {
   const tags = [...text.matchAll(/#([^\s#@]+)/g)].map((m) => m[1]);
   const mentions = [...text.matchAll(/@([^\s#@]+)/g)].map((m) => m[1]);
-  return { id, date: TODAY, ts, text, tags, mentions, source, created: ts, updated: ts, deleted: false };
+  return { id, date: dateStr(new Date(ts)), ts, text, tags, mentions, source, created: ts, updated: ts, deleted: false };
 }
 
 function sysItems(): FeedItem[] {
-  const base = { detail: null, agent: null, files: 0, insertions: 0, deletions: 0, active: false, note_id: null, tags: [], mentions: [] };
+  const base = { detail: null, agent: null, files: 0, insertions: 0, deletions: 0, active: false, note_id: null, tags: [], mentions: [], archived: false };
   return [
     { ...base, id: "s:1", kind: "session", start: at(9, 12), end: at(11, 40), time: "09:12", end_time: "11:40", project: "Daily Work Log", label: "업무일지 생성기 UI 재개편", detail: "main", agent: "claude", files: 12 },
     { ...base, id: "m:1", kind: "meeting", start: at(10, 0), end: at(10, 30), time: "10:00", end_time: "10:30", project: null, label: "주간 스프린트 회의", detail: "참석 6명" },
@@ -76,15 +87,19 @@ function noteItem(n: Note): FeedItem {
   return {
     id: `n:${n.id}`, kind: "note", start: n.ts, end: null, time: `${pad(t.getHours())}:${pad(t.getMinutes())}`, end_time: null,
     project: null, label: n.text, detail: null, agent: null, files: 0, insertions: 0, deletions: 0, active: false,
-    note_id: n.id, tags: n.tags, mentions: n.mentions,
+    note_id: n.id, tags: n.tags, mentions: n.mentions, archived: false,
   };
 }
 
+function todayNotes(): Note[] {
+  return notes.filter((n) => !n.deleted && n.date === TODAY);
+}
+
 function buildFeed(): Feed {
-  const items = [...sysItems(), ...notes.filter((n) => !n.deleted).map(noteItem)].sort((a, b) => (a.start ?? "").localeCompare(b.start ?? ""));
+  const items = [...sysItems(), ...todayNotes().map(noteItem)].sort((a, b) => (a.start ?? "").localeCompare(b.start ?? ""));
   return {
     date: TODAY, tz_name: "Asia/Seoul", items,
-    kpis: { commits: 1, sessions: 2, meetings: 1, notes: notes.filter((n) => !n.deleted).length, tokens: 18_400, insertions: 12, deletions: 4 },
+    kpis: { commits: 1, sessions: 2, meetings: 1, notes: todayNotes().length, tokens: 18_400, insertions: 12, deletions: 4 },
     statuses: [
       { name: "git", state: "ok", count: 1, note: null },
       { name: "claude", state: "ok", count: 1, note: null },
@@ -92,6 +107,38 @@ function buildFeed(): Feed {
       { name: "naverworks", state: "ok", count: 1, note: null },
     ],
     warnings: [], built_at: new Date().toISOString(), last_event_at: at(14, 26),
+    source: "live", stored_at: null,
+  };
+}
+
+/**
+ * 지난 날짜의 가짜 기록 — 세션 2 · 커밋 1 · 회의 1 + 그날 메모.
+ * 7일보다 오래된 날은 세션 하나가 '기록만 남음'(원본 트랜스크립트가 지워진 상황).
+ */
+function pastFeed(day: string, recollect: boolean): Feed {
+  const base = { detail: null, agent: null, files: 0, insertions: 0, deletions: 0, active: false, note_id: null, tags: [], mentions: [], archived: false };
+  const t = (hh: number, mm: number) => atOn(day, hh, mm);
+  const gone = daysAgo(day) > 7;
+  const sys: FeedItem[] = [
+    { ...base, id: `s:${day}:1`, kind: "session", start: t(9, 40), end: t(11, 5), time: "09:40", end_time: "11:05", project: "kms_backend", label: "검색 노드 V2 인덱스 갱신 스크립트 정리", detail: "main", agent: "claude", files: 6, archived: gone },
+    { ...base, id: `m:${day}:1`, kind: "meeting", start: t(11, 0), end: t(11, 40), time: "11:00", end_time: "11:40", project: null, label: "코드리뷰 — 검색 API 응답 구조 합의", files: 4 },
+    { ...base, id: `c:${day}:1`, kind: "commit", start: t(11, 48), end: null, time: "11:48", end_time: null, project: "kms_backend", label: "refactor(search): 인덱스 갱신 스크립트 정리", detail: "9f3c1aa", insertions: 84, deletions: 27, files: 5 },
+    { ...base, id: `s:${day}:2`, kind: "session", start: t(13, 10), end: t(15, 2), time: "13:10", end_time: "15:02", project: "kms_frontend", label: "검색 결과 하이라이트 컴포넌트 초안", detail: "feature/highlight", agent: "codex", files: 3 },
+  ];
+  const mine = notes.filter((n) => !n.deleted && n.date === day).map(noteItem);
+  const items = [...sys, ...mine].sort((a, b) => (a.start ?? "").localeCompare(b.start ?? ""));
+  return {
+    date: day, tz_name: "Asia/Seoul", items,
+    kpis: { commits: 1, sessions: 2, meetings: 1, notes: mine.length, tokens: 12_600, insertions: 84, deletions: 27 },
+    statuses: [
+      { name: "git", state: "ok", count: 1, note: null },
+      { name: "claude", state: gone ? "skipped" : "ok", count: gone ? 0 : 1, note: gone ? "세션 로그 보관 기간(30일)이 지났습니다" : null },
+      { name: "codex", state: "ok", count: 1, note: null },
+      { name: "naverworks", state: "ok", count: 1, note: null },
+    ],
+    warnings: [], built_at: atOn(day, 18, 40), last_event_at: atOn(day, 15, 2),
+    source: recollect ? "collected" : "stored",
+    stored_at: recollect ? new Date().toISOString() : atOn(day, 18, 42),
   };
 }
 
@@ -188,6 +235,11 @@ export const mockApi = {
   }),
   appQuit: async () => {},
   feedToday: async () => feed,
+  feedFor: async (date: string, recollect = false): Promise<Feed> => {
+    const day = date === "today" ? TODAY : date === "yesterday" ? shift(-1) : date;
+    await wait(recollect ? 800 : 220);
+    return day === TODAY ? feed : pastFeed(day, recollect);
+  },
   refreshNow: async () => {
     emit("feed:refreshing", true);
     await wait(900);
@@ -201,12 +253,13 @@ export const mockApi = {
     emit("feed:refreshing", false);
     publish("rescan");
   },
-  noteAdd: async (text: string, source?: string) => {
+  noteAdd: async (text: string, source?: string, at?: string) => {
     const t = text.trim();
     if (!t) throw "빈 메모는 저장하지 않습니다.";
-    const n = mkNote(++noteSeq, new Date().toISOString(), t, source ?? "app");
+    const n = mkNote(++noteSeq, at ?? new Date().toISOString(), t, source ?? "app");
     notes.push(n);
-    publish("notes", [noteItem(n)]);
+    // 지난 날짜에 남긴 메모는 오늘 피드에 안 들어간다(백엔드도 같은 동작).
+    publish("notes", n.date === TODAY ? [noteItem(n)] : []);
     return n;
   },
   noteEdit: async (id: number, text: string) => {

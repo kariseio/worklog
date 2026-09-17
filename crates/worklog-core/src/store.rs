@@ -1,9 +1,9 @@
 //! SQLite 저장소 (`~/.worklog/worklog.db`).
 //!
 //! 테이블: notes(메모) · runs(생성 실행 이력) · documents(생성된 일지) · repos(저장소 캐시) ·
-//! file_state(jsonl 증분 파싱 위치) · kv(잡동사니). 마크다운 파일은 여전히 내보내기 결과이고,
-//! 앱 화면은 이 DB 를 읽는다. 시각은 RFC3339(UTC, 밀리초) 문자열, 날짜는 "YYYY-MM-DD" 로 저장한다 —
-//! 같은 형식이라 문자열 비교가 시간 순서와 일치한다.
+//! file_state(jsonl 증분 파싱 위치) · day_feeds(날짜별 피드 스냅샷) · kv(잡동사니). 마크다운
+//! 파일은 여전히 내보내기 결과이고, 앱 화면은 이 DB 를 읽는다. 시각은 RFC3339(UTC, 밀리초)
+//! 문자열, 날짜는 "YYYY-MM-DD" 로 저장한다 — 같은 형식이라 문자열 비교가 시간 순서와 일치한다.
 
 use std::path::Path;
 
@@ -28,7 +28,7 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS notes (
@@ -87,6 +87,16 @@ CREATE TABLE IF NOT EXISTS file_state (
 CREATE TABLE IF NOT EXISTS kv (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+"#;
+
+/// v2: 날짜별 피드 스냅샷. 원본(세션 로그·커밋)이 사라져도 지난 날짜 타임라인을 그릴 수 있게
+/// 그날의 [`crate::feed::Feed`] 를 JSON 그대로 담아 둔다.
+const SCHEMA_V2: &str = r#"
+CREATE TABLE IF NOT EXISTS day_feeds (
+  date    TEXT PRIMARY KEY,
+  feed    TEXT NOT NULL,
+  updated TEXT NOT NULL
 );
 "#;
 
@@ -277,6 +287,9 @@ impl Store {
             .query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < 1 {
             self.conn.execute_batch(SCHEMA_V1)?;
+        }
+        if version < 2 {
+            self.conn.execute_batch(SCHEMA_V2)?;
         }
         if version < SCHEMA_VERSION {
             self.conn
@@ -628,6 +641,47 @@ impl Store {
 
     pub fn file_state_clear(&self) -> Result<usize> {
         Ok(self.conn.execute("DELETE FROM file_state", [])?)
+    }
+
+    // ---- day_feeds ------------------------------------------------------ //
+
+    /// 그날의 피드 스냅샷 저장(같은 날짜면 교체). `feed_json` 은 [`crate::feed::Feed`] 직렬화 결과.
+    pub fn day_feed_put(&self, date: NaiveDate, feed_json: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO day_feeds(date, feed, updated) VALUES (?1, ?2, ?3)
+             ON CONFLICT(date) DO UPDATE SET feed = excluded.feed, updated = excluded.updated",
+            params![date_str(date), feed_json, now_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// 저장된 피드 JSON 과 마지막으로 쓴 시각.
+    pub fn day_feed_get(&self, date: NaiveDate) -> Result<Option<(String, DateTime<Utc>)>> {
+        let row: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT feed, updated FROM day_feeds WHERE date = ?1",
+                params![date_str(date)],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match row {
+            Some((feed, updated)) => Ok(Some((feed, parse_ts(&updated)?))),
+            None => Ok(None),
+        }
+    }
+
+    /// 스냅샷이 있는 날짜(최신순).
+    pub fn day_feed_dates(&self, limit: usize) -> Result<Vec<NaiveDate>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT date FROM day_feeds ORDER BY date DESC LIMIT ?1")?;
+        let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(parse_date(&r?)?);
+        }
+        Ok(out)
     }
 
     // ---- kv ------------------------------------------------------------- //
@@ -993,5 +1047,68 @@ mod tests {
         assert_eq!(s.file_state_get("p").unwrap().unwrap(), fs2);
         assert_eq!(s.file_state_clear().unwrap(), 1);
         assert!(s.file_state_get("p").unwrap().is_none());
+    }
+
+    fn has_table(s: &Store, name: &str) -> bool {
+        s.conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![name],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .unwrap()
+            .is_some()
+    }
+
+    #[test]
+    fn day_feeds_put_get_replace_and_dates() {
+        let s = Store::open_in_memory().unwrap();
+        let day = d(2026, 9, 3);
+        assert!(s.day_feed_get(day).unwrap().is_none());
+
+        s.day_feed_put(day, "{\"items\":[]}").unwrap();
+        let (json, updated) = s.day_feed_get(day).unwrap().unwrap();
+        assert_eq!(json, "{\"items\":[]}");
+        assert!((Utc::now() - updated).num_seconds().abs() < 60);
+
+        // 같은 날짜는 교체(행이 늘지 않는다)
+        s.day_feed_put(day, "{\"items\":[1]}").unwrap();
+        assert_eq!(s.day_feed_get(day).unwrap().unwrap().0, "{\"items\":[1]}");
+        assert_eq!(s.day_feed_dates(10).unwrap(), vec![day]);
+
+        s.day_feed_put(d(2026, 9, 5), "a").unwrap();
+        s.day_feed_put(d(2026, 9, 1), "b").unwrap();
+        assert_eq!(
+            s.day_feed_dates(10).unwrap(),
+            vec![d(2026, 9, 5), day, d(2026, 9, 1)] // 최신순
+        );
+        assert_eq!(s.day_feed_dates(2).unwrap(), vec![d(2026, 9, 5), day]);
+        assert!(s.day_feed_get(d(2026, 9, 9)).unwrap().is_none());
+    }
+
+    #[test]
+    fn migrates_v1_db_to_v2() {
+        let s = Store::open_in_memory().unwrap();
+        // v1 DB 흉내: 새 테이블을 지우고 버전을 1 로 되돌린다.
+        s.conn
+            .execute_batch("DROP TABLE day_feeds; PRAGMA user_version = 1;")
+            .unwrap();
+        assert!(!has_table(&s, "day_feeds"));
+        assert_eq!(s.schema_version().unwrap(), 1);
+        s.kv_set("k", "v").unwrap(); // 기존 데이터
+
+        s.migrate().unwrap();
+        assert!(has_table(&s, "day_feeds"));
+        assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(s.kv_get("k").unwrap().as_deref(), Some("v")); // 기존 데이터는 그대로
+        s.day_feed_put(d(2026, 9, 3), "x").unwrap();
+        assert_eq!(s.day_feed_get(d(2026, 9, 3)).unwrap().unwrap().0, "x");
+
+        // 새 DB 는 v1·v2 문이 모두 돌아 두 테이블이 다 있다.
+        let fresh = Store::open_in_memory().unwrap();
+        assert!(has_table(&fresh, "notes") && has_table(&fresh, "day_feeds"));
+        assert_eq!(fresh.schema_version().unwrap(), SCHEMA_VERSION);
     }
 }

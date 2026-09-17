@@ -3,7 +3,7 @@
 //! I/O 가 있는 커맨드는 `async` 로 두어 메인(UI) 스레드를 막지 않는다. 오래 걸리는 네트워크·
 //! 대화상자는 `spawn_blocking` 으로 뺀다. 오류는 사용자에게 그대로 보여줄 한국어 문자열.
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter as _, State};
 use tauri_plugin_dialog::DialogExt as _;
@@ -13,7 +13,7 @@ use worklog_core::{
     collect::naverworks::NaverWorksCollector,
     config::{CalendarInfo, Config, LoadStatus, SecretsPresence},
     drives::{DriveInfo, drives_info},
-    feed::Feed,
+    feed::{self, Feed},
     model::{DailyData, WorkLog},
     notes,
     output::{SinkResult, notion::NotionSink, obsidian},
@@ -113,19 +113,141 @@ pub fn rescan_repos(state: State<'_, AppState>) -> Res<()> {
     state.send(WorkerMsg::RescanRepos)
 }
 
+/// 저장된 그날 스냅샷 → 피드. 없거나 깨졌으면 None(다시 수집하면 되므로 오류로 만들지 않는다).
+fn stored_feed(state: &AppState, day: NaiveDate) -> Option<(Feed, DateTime<Utc>)> {
+    let row = match state.with_store(|s| s.day_feed_get(day).map_err(|e| e.to_string())) {
+        Ok(v) => v?,
+        Err(e) => {
+            tracing::warn!("{day} 저장된 피드 조회 실패: {e}");
+            return None;
+        }
+    };
+    match serde_json::from_str::<Feed>(&row.0) {
+        Ok(f) => Some((f, row.1)),
+        Err(e) => {
+            tracing::warn!("{day} 저장된 피드가 깨졌습니다(원본에서 다시 수집): {e}");
+            None
+        }
+    }
+}
+
+/// 이미 지나간 날에는 '진행 중' 세션이 있을 수 없다. 앱을 끄거나 날짜가 넘어가던 순간
+/// 살아 있던 세션은 스냅샷에 `active` 로 굳어 있어, 지난 날짜로 읽을 때는 지워 준다.
+fn clear_active(feed: &mut Feed) {
+    for i in &mut feed.items {
+        i.active = false;
+    }
+}
+
+/// 특정 날짜의 피드.
+///
+/// - 오늘: 엔진이 들고 있는 실시간 스냅샷(`source: "live"`). 첫 수집 전이면 아래로 내려간다.
+/// - 지난 날짜에 저장된 기록이 있고 `recollect` 가 아니면: 그 기록에 지금 메모만 다시 얹어
+///   돌려준다(`source: "stored"`).
+/// - 그 밖에는 그날을 원본에서 다시 수집하고, 저장된 기록이 있으면 원본이 사라진 항목을
+///   `archived` 로 남기며 합쳐 저장한 뒤 돌려준다(`source: "collected"`).
+#[tauri::command]
+pub async fn feed_for(
+    state: State<'_, AppState>,
+    date: String,
+    recollect: Option<bool>,
+) -> Res<Feed> {
+    let cfg = state.config();
+    let tz = get_tz(&cfg.timezone);
+    let day = parse_date(&cfg, Some(&date))?;
+    let today = Utc::now().with_timezone(&tz).date_naive();
+    if day == today
+        && let Some(mut f) = state.feed()
+    {
+        f.source = "live".into();
+        f.stored_at = None;
+        return Ok(f);
+    }
+
+    let notes = match state.with_store(|s| Ok(notes::items_for(Some(s), day))) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("{day} 메모 조회 실패: {e}");
+            Vec::new()
+        }
+    };
+    let stored = stored_feed(&state, day);
+    if !recollect.unwrap_or(false)
+        && let Some((f, at)) = &stored
+    {
+        let mut f = f.clone();
+        feed::replace_notes(&mut f, feed::note_items(&notes, tz));
+        if day != today {
+            clear_active(&mut f);
+        }
+        f.source = "stored".into();
+        f.stored_at = Some(*at);
+        return Ok(f);
+    }
+
+    // 원본에서 다시 수집 — git 로그·세션 파일을 읽으므로 블로킹 풀에서.
+    let cfg2 = cfg.clone();
+    let day_spec = day.to_string();
+    let fresh = tauri::async_runtime::spawn_blocking(move || -> Res<Feed> {
+        let ctx = service::make_context(&cfg2, Some(&day_spec)).map_err(|e| e.to_string())?;
+        let sources = service::enabled_sources(&cfg2, None);
+        let collected = service::collect(&cfg2, &ctx, &sources, notes);
+        Ok(feed::build(
+            &collected.data,
+            &collected.statuses,
+            ctx.tz(),
+            Utc::now(),
+        ))
+    })
+    .await
+    .map_err(|e| format!("{day} 수집 실패: {e}"))??;
+
+    let mut merged = match &stored {
+        Some((old, _)) => feed::merge_keep_missing(old, &fresh),
+        None => fresh,
+    };
+    if day != today {
+        clear_active(&mut merged);
+    }
+    merged.stored_at = Some(Utc::now());
+    merged.source = "stored".into(); // 저장되는 형태는 늘 stored
+    match serde_json::to_string(&merged) {
+        Ok(json) => {
+            if let Err(e) =
+                state.with_store(|s| s.day_feed_put(day, &json).map_err(|e| e.to_string()))
+            {
+                tracing::warn!("{day} 피드 스냅샷 저장 실패: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("{day} 피드 직렬화 실패: {e}"),
+    }
+    merged.source = "collected".into();
+    Ok(merged)
+}
+
 // ---- 메모 ----------------------------------------------------------------- //
 
+/// 메모 한 줄. `at`(RFC3339)을 주면 그 시각 — 곧 그날짜 — 으로 남긴다(지난 날짜 메모).
 #[tauri::command]
 pub async fn note_add(
     state: State<'_, AppState>,
     text: String,
     source: Option<String>,
+    at: Option<String>,
 ) -> Res<Note> {
     let cfg = state.config();
     let tz = get_tz(&cfg.timezone);
     let source = source.unwrap_or_else(|| "app".into());
+    let at = match at.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => Some(
+            DateTime::parse_from_rfc3339(s)
+                .map_err(|_| "시각 형식 오류".to_string())?
+                .with_timezone(&Utc),
+        ),
+        None => None,
+    };
     let note = state
-        .with_store(|s| notes::add_note(s, tz, &text, &source, None).map_err(|e| e.to_string()))?
+        .with_store(|s| notes::add_note(s, tz, &text, &source, at).map_err(|e| e.to_string()))?
         .ok_or_else(|| "빈 메모는 저장하지 않습니다.".to_string())?;
     state.send(WorkerMsg::NotesChanged)?;
     Ok(note)
@@ -187,7 +309,10 @@ pub fn generate_status(state: State<'_, AppState>) -> Option<GenStatus> {
 
 #[tauri::command]
 pub async fn runs_recent(state: State<'_, AppState>, limit: Option<usize>) -> Res<Vec<Run>> {
-    state.with_store(|s| s.runs_recent(limit.unwrap_or(20)).map_err(|e| e.to_string()))
+    state.with_store(|s| {
+        s.runs_recent(limit.unwrap_or(20))
+            .map_err(|e| e.to_string())
+    })
 }
 
 // ---- 문서 ----------------------------------------------------------------- //
@@ -325,9 +450,7 @@ pub async fn settings_set(
             c.normalize();
             state.set_config(c);
             state.set_config_status(again.status);
-            return Err(
-                "설정 파일을 다시 읽었습니다. 화면을 새로 고친 뒤 다시 저장하세요.".into(),
-            );
+            return Err("설정 파일을 다시 읽었습니다. 화면을 새로 고친 뒤 다시 저장하세요.".into());
         }
         return Err(format!(
             "설정 파일을 읽지 못해 저장을 막았습니다(기존 설정을 지우지 않기 위해): {reason}"
@@ -557,4 +680,3 @@ pub fn quick_hide(app: AppHandle) {
 pub fn app_quit(app: AppHandle) {
     app.exit(0);
 }
-

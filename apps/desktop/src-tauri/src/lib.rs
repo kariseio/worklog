@@ -102,6 +102,7 @@ pub fn run() {
             commands::app_version,
             commands::app_quit,
             commands::feed_today,
+            commands::feed_for,
             commands::refresh_now,
             commands::refresh_calendar,
             commands::rescan_repos,

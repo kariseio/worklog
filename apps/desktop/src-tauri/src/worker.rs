@@ -4,6 +4,9 @@
 //! 이벤트와 [`AppState::set_feed`] 스냅샷으로 내보낸다. 감시기의 변경 배치는 작은 전달 스레드가
 //! 같은 채널로 넣어 준다(std mpsc 에는 select 가 없다).
 //!
+//! 오늘 피드는 갱신될 때마다 SQLite `day_feeds` 에 스냅샷으로 남긴다(원본이 사라진 뒤에도
+//! 지난 날짜 타임라인을 그릴 수 있게). 틱·감시 폭주에는 [`PERSIST_MIN`] 간격으로 묶어 쓴다.
+//!
 //! 저장소 목록은 SQLite `repos` 캐시를 쓴다: 시작 때 캐시로 먼저 빠르게 채우고, 이어서 디스크를
 //! 한 번 탐색해 캐시를 갱신한다. 주기 전체 수집은 캐시(+세션 cwd)만 다시 읽는다. 디스크 재탐색은
 //! 시작 때와 '저장소 다시 찾기'([`WorkerMsg::RescanRepos`]), git 설정 변경 때만.
@@ -21,7 +24,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use worklog_core::{
     config::{Config, ScheduleMode},
-    feed::{Feed, FeedDelta},
+    feed::{self, Feed, FeedDelta},
     live::Live,
     paths, schedule,
     store::{RepoEntry, Store, run_kind},
@@ -44,6 +47,9 @@ const DEBOUNCE: Duration = Duration::from_millis(700);
 const KV_LAST_ALIVE: &str = "app.last_alive";
 /// 마지막으로 처리한 정해진 시각 동작.
 const KV_LAST_FIRED: &str = "schedule.last_fired";
+/// 오늘 스냅샷 저장 최소 간격(틱·파일 변경 폭주로 SQLite 를 두들기지 않게).
+/// 전체 수집·설정 변경·날짜 넘김은 이 간격과 무관하게 항상 저장한다.
+const PERSIST_MIN: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FeedChanged {
@@ -85,6 +91,10 @@ fn run(app: AppHandle, tx: mpsc::Sender<WorkerMsg>, rx: mpsc::Receiver<WorkerMsg
         last_full: None,
         last_meeting: None,
         last_tick: Instant::now(),
+        // 부팅 직후(자동 시작)에도 안전하게 — 뺄 수 없으면 그냥 지금.
+        last_persist: Instant::now()
+            .checked_sub(PERSIST_MIN)
+            .unwrap_or_else(Instant::now),
         next_fire: None,
     };
     if let Err(p) = catch_unwind(AssertUnwindSafe(|| eng.startup())) {
@@ -164,6 +174,15 @@ fn coalesce(msgs: Vec<WorkerMsg>) -> Vec<WorkerMsg> {
     out
 }
 
+/// 간격과 무관하게 항상 스냅샷을 남기는 이유들(전체 수집·설정 변경·날짜 넘김).
+/// 나머지(watch · notes · calendar · tick)는 [`PERSIST_MIN`] 간격으로 묶는다.
+fn always_persists(reason: &str) -> bool {
+    matches!(
+        reason,
+        "startup" | "scan" | "rescan" | "manual" | "periodic" | "config" | "rollover"
+    )
+}
+
 fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
     p.downcast_ref::<&str>()
         .map(|s| s.to_string())
@@ -180,6 +199,8 @@ struct Engine {
     last_full: Option<DateTime<Utc>>,
     last_meeting: Option<DateTime<Utc>>,
     last_tick: Instant,
+    /// 오늘 스냅샷을 마지막으로 저장한 시각.
+    last_persist: Instant,
     next_fire: Option<DateTime<Utc>>,
 }
 
@@ -222,13 +243,14 @@ impl Engine {
             .emit("engine:error", format!("{what} 중 오류: {msg}"));
     }
 
-    /// 스냅샷 갱신 + 이벤트. 틱에서 아무것도 안 바뀌었으면 이벤트는 생략.
-    fn publish(&self, reason: &'static str, delta: FeedDelta) {
+    /// 스냅샷 갱신 + 저장 + 이벤트. 틱에서 아무것도 안 바뀌었으면 저장·이벤트 모두 생략.
+    fn publish(&mut self, reason: &'static str, delta: FeedDelta) {
         let feed = self.live.feed().clone();
         self.state().set_feed(feed.clone());
         if reason == "tick" && delta.is_empty() {
             return;
         }
+        self.persist_feed(reason);
         let _ = self.app.emit(
             "feed:changed",
             FeedChanged {
@@ -237,6 +259,52 @@ impl Engine {
                 feed,
             },
         );
+    }
+
+    /// 오늘 피드를 `day_feeds` 에 남긴다. 이미 저장된 스냅샷이 있으면 이번 수집에 없는 예전
+    /// 항목(사라진 세션 로그 등)을 `archived` 로 남기며 합친다. 실패해도 엔진은 계속 돈다.
+    fn persist_feed(&mut self, reason: &'static str) {
+        if !always_persists(reason) && self.last_persist.elapsed() < PERSIST_MIN {
+            return;
+        }
+        self.last_persist = Instant::now();
+        let Some(store) = &self.store else { return };
+        let live = self.live.feed();
+        let date = live.date;
+        let stored = match store.day_feed_get(date) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("{date} 저장된 피드 조회 실패: {e}");
+                None
+            }
+        };
+        let old: Option<Feed> = stored.and_then(|(json, _)| match serde_json::from_str(&json) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                tracing::warn!("{date} 저장된 피드가 깨져 새로 씁니다: {e}");
+                None
+            }
+        });
+        let mut merged = match &old {
+            Some(o) => feed::merge_keep_missing(o, live),
+            None => live.clone(),
+        };
+        merged.source = "stored".into();
+        merged.stored_at = Some(Utc::now());
+        let json = match serde_json::to_string(&merged) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!("{date} 피드 직렬화 실패: {e}");
+                return;
+            }
+        };
+        match store.day_feed_put(date, &json) {
+            Ok(()) => tracing::debug!(
+                "{date} 피드 스냅샷 저장({reason}) — 항목 {}개",
+                merged.items.len()
+            ),
+            Err(e) => tracing::warn!("{date} 피드 스냅샷 저장 실패: {e}"),
+        }
     }
 
     fn set_refreshing(&self, on: bool) {
@@ -448,6 +516,7 @@ impl Engine {
 
     fn rollover(&mut self) {
         tracing::info!("날짜가 바뀌어 오늘 피드를 새로 만듭니다.");
+        self.persist_feed("rollover"); // Live 를 갈아 끼우기 전에 그날의 마지막 스냅샷을 남긴다.
         let known = self.live.known_repos().map(|k| k.to_vec());
         match Live::new(self.live.config().clone(), None) {
             Ok(l) => self.live = l,
