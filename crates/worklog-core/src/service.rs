@@ -172,10 +172,179 @@ pub fn collect(
         data.calendar = res.data;
     }
 
+    normalize_sessions(&mut data);
     disambiguate_repo_names(&mut data);
+    // 칩 수도 병합 뒤 세션 수로 맞춘다(지표의 'AI N세션'과 어긋나지 않게).
+    for (name, sd) in [("claude", &data.claude), ("codex", &data.codex)] {
+        if let (Some(st), Some(sd)) = (statuses.get_mut(name), sd)
+            && st.state == crate::collect::SourceState::Ok
+        {
+            st.count = session_count(sd);
+        }
+    }
     Collected {
         data,
         statuses: statuses.into_values().collect(),
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// 세션 정규화 (중복 병합 + worktree 롤업)
+// --------------------------------------------------------------------------- //
+
+/// 같은 세션이 여러 파일로 들어온 것을 하나로 합치고, worktree cwd 를 실제 저장소로 묶는다.
+///
+/// 하나의 Claude/Codex 세션이 worktree 별 로그 파일이나 이어받기(resume)로 여러 파일에 걸쳐
+/// 기록되면 수집기는 파일마다 세션 하나를 만든다. 그대로 두면 세션 수·집중시간·토큰이 배로
+/// 부풀고, worktree 마다 프로젝트 행이 따로 생긴다. 여기서:
+///
+/// 1. [`Session::dedupe_key`] 가 같은 세션들을 하나로 병합한다.
+///    구간은 `[min(first_ts), max(last_ts)]`, 파일·명령은 합집합, 도구 호출 수는 합,
+///    출력 토큰은 **최댓값**(같은 세션을 두 번 읽은 것이므로 더하면 이중 계산),
+///    제목·의도는 비어 있지 않은 쪽, 질답은 `(시각, 질문)` 기준 중복 제거.
+/// 2. cwd 가 git 저장소면 `git-common-dir` 로 실제 저장소를 찾아 `project` 를 그 이름으로
+///    바꾼다. worktree 들은 common-dir 을 공유하므로 한 프로젝트로 모인다.
+///
+/// [`collect`] 와 [`crate::live::Live`] 재조립 양쪽에서 [`disambiguate_repo_names`] 직전에
+/// 부른다. 여러 번 불러도 결과가 같다(멱등).
+pub fn normalize_sessions(data: &mut DailyData) {
+    let mut cache: HashMap<String, Option<String>> = HashMap::new();
+    if let Some(sd) = &mut data.claude {
+        normalize_session_list(&mut sd.sessions, &mut cache);
+    }
+    if let Some(sd) = &mut data.codex {
+        normalize_session_list(&mut sd.sessions, &mut cache);
+    }
+}
+
+fn normalize_session_list(
+    sessions: &mut Vec<crate::model::Session>,
+    cache: &mut HashMap<String, Option<String>>,
+) {
+    use crate::model::Session;
+    use indexmap::map::Entry;
+
+    let mut merged: IndexMap<String, Session> = IndexMap::with_capacity(sessions.len());
+    for s in sessions.drain(..) {
+        match merged.entry(s.dedupe_key()) {
+            Entry::Occupied(mut e) => merge_session(e.get_mut(), s),
+            Entry::Vacant(e) => {
+                e.insert(s);
+            }
+        }
+    }
+    let mut out: Vec<Session> = merged.into_values().collect();
+    for s in &mut out {
+        if let Some(cwd) = s.cwd.clone()
+            && let Some(name) = repo_name_of(&cwd, cache)
+        {
+            s.project = Some(name);
+        }
+    }
+    out.sort_by_key(|s| (s.first_ts.is_none(), s.first_ts));
+    *sessions = out;
+}
+
+/// cwd → 실제 저장소 이름(worktree 는 본체 이름). 저장소가 아니면 None. 같은 cwd 는 한 번만 본다.
+fn repo_name_of(cwd: &str, cache: &mut HashMap<String, Option<String>>) -> Option<String> {
+    if let Some(v) = cache.get(cwd) {
+        return v.clone();
+    }
+    let v = crate::collect::git::identify(Path::new(cwd)).map(|i| i.name);
+    cache.insert(cwd.to_string(), v.clone());
+    v
+}
+
+/// 세션 구간 길이(초). 시각을 모르면 -1 — 아는 쪽이 항상 이긴다.
+fn span_secs(s: &crate::model::Session) -> i64 {
+    match (s.first_ts, s.last_ts) {
+        (Some(f), Some(l)) => (l - f).num_seconds().max(0),
+        _ => -1,
+    }
+}
+
+fn is_blank(v: &Option<String>) -> bool {
+    v.as_deref().map(str::trim).unwrap_or("").is_empty()
+}
+
+/// 등장 순서를 지키며 `extra` 중 없는 값만 뒤에 붙인다.
+fn union_strings(base: &mut Vec<String>, extra: Vec<String>) {
+    for v in extra {
+        if !base.contains(&v) {
+            base.push(v);
+        }
+    }
+}
+
+fn merge_session(base: &mut crate::model::Session, other: crate::model::Session) {
+    // 더 넓은 구간을 가진 쪽의 식별 정보를 남긴다(짧은 조각이 cwd 를 덮어쓰지 않도록).
+    let wider = span_secs(&other) > span_secs(base);
+    base.first_ts = min_opt(base.first_ts, other.first_ts);
+    base.last_ts = max_opt(base.last_ts, other.last_ts);
+    if base.session_id.is_none() {
+        base.session_id = other.session_id;
+    }
+    if other.cwd.is_some() && (wider || base.cwd.is_none()) {
+        base.cwd = other.cwd;
+    }
+    if other.project.is_some() && (wider || base.project.is_none()) {
+        base.project = other.project;
+    }
+    if other.git_branch.is_some() && (wider || base.git_branch.is_none()) {
+        base.git_branch = other.git_branch;
+    }
+    if is_blank(&base.title) && !is_blank(&other.title) {
+        base.title = other.title;
+    }
+    if is_blank(&base.intent) && !is_blank(&other.intent) {
+        base.intent = other.intent;
+    }
+    union_strings(&mut base.files_edited, other.files_edited);
+    union_strings(&mut base.files_read, other.files_read);
+    union_strings(&mut base.commands, other.commands);
+    for (tool, n) in other.tool_counts {
+        *base.tool_counts.entry(tool).or_insert(0) += n;
+    }
+    // 같은 세션을 두 번 읽은 것이므로 더하지 않고 큰 쪽을 쓴다.
+    base.output_tokens = base.output_tokens.max(other.output_tokens);
+    base.qa_dropped = base.qa_dropped.max(other.qa_dropped);
+    merge_qa(&mut base.qa, other.qa);
+}
+
+/// 질답 병합 — `(시각, 질문)` 이 같으면 같은 턴으로 보고 버린다. 새로 붙었으면 시각순으로 정렬.
+fn merge_qa(base: &mut Vec<crate::model::QaTurn>, extra: Vec<crate::model::QaTurn>) {
+    let mut added = false;
+    for t in extra {
+        if base
+            .iter()
+            .any(|b| b.time == t.time && b.question == t.question)
+        {
+            continue;
+        }
+        base.push(t);
+        added = true;
+    }
+    if added {
+        // 시각을 모르는 턴("")은 뒤로. 같은 시각끼리는 원래 순서 유지(안정 정렬).
+        base.sort_by(|a, b| {
+            (a.time.is_empty(), a.time.as_str()).cmp(&(b.time.is_empty(), b.time.as_str()))
+        });
+    }
+}
+
+fn min_opt<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, None) => x,
+        (None, y) => y,
+    }
+}
+
+fn max_opt<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (x, None) => x,
+        (None, y) => y,
     }
 }
 
@@ -895,6 +1064,206 @@ mod tests {
             data.claude.as_ref().unwrap().sessions[0].project.as_deref(),
             Some("aa/app")
         );
+    }
+
+    /// 한 세션이 파일 두 개로 쪼개져 들어와도 하나로 합쳐진다(구간·파일·도구·질답 병합).
+    #[test]
+    fn merges_one_session_split_across_files() {
+        use crate::model::QaTurn;
+        use crate::time::parse_iso;
+
+        let dir = tempfile::tempdir().unwrap();
+        let short = dir.path().join("wt-a").to_string_lossy().into_owned();
+        let wide = dir.path().join("main").to_string_lossy().into_owned();
+        let mut tools_a = IndexMap::new();
+        tools_a.insert("Edit".to_string(), 3u32);
+        let mut tools_b = IndexMap::new();
+        tools_b.insert("Edit".to_string(), 2u32);
+        tools_b.insert("Read".to_string(), 1u32);
+
+        let mut data = DailyData::new(d(2026, 9, 16), "Asia/Seoul");
+        data.claude = Some(SessionData {
+            sessions: vec![
+                // 짧은 조각(먼저 등장) — 제목 없음
+                Session {
+                    session_id: Some("S".into()),
+                    project: Some("wt-a".into()),
+                    cwd: Some(short.clone()),
+                    intent: Some("첫 요청".into()),
+                    files_edited: vec!["a.rs".into(), "b.rs".into()],
+                    files_read: vec!["r.rs".into()],
+                    commands: vec!["cargo test".into()],
+                    tool_counts: tools_a,
+                    output_tokens: 1_000,
+                    first_ts: parse_iso("2026-09-16T01:00:00Z"),
+                    last_ts: parse_iso("2026-09-16T02:00:00Z"),
+                    qa: vec![QaTurn {
+                        time: "10:00".into(),
+                        question: "질문1".into(),
+                        answer: "답1".into(),
+                    }],
+                    qa_dropped: 2,
+                    ..Default::default()
+                },
+                // 넓은 조각 — 같은 session_id
+                Session {
+                    session_id: Some("S".into()),
+                    project: Some("main".into()),
+                    cwd: Some(wide.clone()),
+                    git_branch: Some("main".into()),
+                    title: Some("세션 제목".into()),
+                    files_edited: vec!["b.rs".into(), "c.rs".into()],
+                    commands: vec!["cargo test".into(), "cargo clippy".into()],
+                    tool_counts: tools_b,
+                    output_tokens: 4_000,
+                    first_ts: parse_iso("2026-09-16T00:30:00Z"),
+                    last_ts: parse_iso("2026-09-16T05:00:00Z"),
+                    qa: vec![
+                        QaTurn {
+                            time: "10:00".into(),
+                            question: "질문1".into(),
+                            answer: "답1".into(),
+                        },
+                        QaTurn {
+                            time: "13:00".into(),
+                            question: "질문2".into(),
+                            answer: "답2".into(),
+                        },
+                    ],
+                    qa_dropped: 1,
+                    ..Default::default()
+                },
+            ],
+        });
+        normalize_sessions(&mut data);
+
+        let ss = &data.claude.as_ref().unwrap().sessions;
+        assert_eq!(ss.len(), 1);
+        let s = &ss[0];
+        assert_eq!(s.session_id.as_deref(), Some("S"));
+        assert_eq!(s.first_ts, parse_iso("2026-09-16T00:30:00Z")); // 두 조각의 합집합
+        assert_eq!(s.last_ts, parse_iso("2026-09-16T05:00:00Z"));
+        assert_eq!(s.cwd.as_deref(), Some(wide.as_str())); // 넓은 쪽의 cwd
+        assert_eq!(s.git_branch.as_deref(), Some("main"));
+        assert_eq!(s.title.as_deref(), Some("세션 제목")); // 비어 있지 않은 쪽
+        assert_eq!(s.intent.as_deref(), Some("첫 요청")); // 먼저 채워진 쪽 유지
+        assert_eq!(s.files_edited, vec!["a.rs", "b.rs", "c.rs"]); // 합집합
+        assert_eq!(s.files_read, vec!["r.rs"]);
+        assert_eq!(s.commands, vec!["cargo test", "cargo clippy"]);
+        assert_eq!(s.tool_counts.get("Edit"), Some(&5)); // 도구는 합
+        assert_eq!(s.tool_counts.get("Read"), Some(&1));
+        assert_eq!(s.output_tokens, 4_000); // 같은 세션이므로 더하지 않고 최댓값
+        assert_eq!(s.qa_dropped, 2);
+        assert_eq!(
+            s.qa.iter().map(|t| t.question.as_str()).collect::<Vec<_>>(),
+            vec!["질문1", "질문2"] // (시각, 질문) 중복 제거
+        );
+
+        // 멱등: 다시 불러도 그대로
+        let before = data.claude.clone();
+        normalize_sessions(&mut data);
+        assert_eq!(data.claude, before);
+    }
+
+    /// session_id 가 없는 세션은 (cwd, 시작 분)으로 묶인다. 분이 다르면 따로 남는다.
+    #[test]
+    fn sessions_without_id_group_by_cwd_and_start_minute() {
+        use crate::time::parse_iso;
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let at = |t: &str| Session {
+            cwd: Some(cwd.clone()),
+            project: Some("p".into()),
+            first_ts: parse_iso(t),
+            last_ts: parse_iso(t),
+            ..Default::default()
+        };
+        let mut data = DailyData::new(d(2026, 9, 16), "Asia/Seoul");
+        data.claude = Some(SessionData {
+            sessions: vec![
+                at("2026-09-16T01:00:10Z"),
+                at("2026-09-16T01:00:50Z"), // 같은 분 → 병합
+                at("2026-09-16T01:02:00Z"), // 다른 분 → 별도
+            ],
+        });
+        normalize_sessions(&mut data);
+        assert_eq!(data.claude.as_ref().unwrap().sessions.len(), 2);
+    }
+
+    /// 같은 저장소의 worktree 들에서 열린 세션은 한 프로젝트로 모인다.
+    #[test]
+    fn worktree_sessions_roll_up_to_one_project() {
+        if !git_ok() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("agent-platform-backend");
+        std::fs::create_dir_all(&main).unwrap();
+        let g = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&main).args(args).output();
+            assert!(out.is_ok_and(|o| o.status.success()), "git {args:?}");
+        };
+        g(&["init", "-q"]);
+        g(&["config", "user.email", "me@x"]);
+        g(&["config", "user.name", "Me"]);
+        g(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(main.join("a.txt"), "x\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "init"]);
+        let wt1 = dir.path().join("wt-feature");
+        let wt2 = dir.path().join("wt-hotfix");
+        g(&["worktree", "add", "-q", wt1.to_str().unwrap(), "-b", "f1"]);
+        g(&["worktree", "add", "-q", wt2.to_str().unwrap(), "-b", "f2"]);
+
+        let sess = |id: &str, p: &Path| Session {
+            session_id: Some(id.into()),
+            cwd: Some(p.to_string_lossy().into_owned()),
+            project: Some(
+                p.file_name().unwrap().to_string_lossy().into_owned(), // 수집기가 붙인 worktree 폴더명
+            ),
+            first_ts: Some(Utc::now()),
+            last_ts: Some(Utc::now()),
+            ..Default::default()
+        };
+        let mut data = DailyData::new(d(2026, 9, 16), "Asia/Seoul");
+        data.claude = Some(SessionData {
+            sessions: vec![
+                sess("a", &main),
+                sess("b", &wt1),
+                sess("c", &wt2),
+                // 저장소가 아닌 cwd → 기존 프로젝트명 유지
+                Session {
+                    session_id: Some("d".into()),
+                    cwd: Some(dir.path().to_string_lossy().into_owned()),
+                    project: Some("그대로".into()),
+                    ..Default::default()
+                },
+            ],
+        });
+        normalize_sessions(&mut data);
+        let projects: Vec<&str> = data
+            .claude
+            .as_ref()
+            .unwrap()
+            .sessions
+            .iter()
+            .map(|s| s.project.as_deref().unwrap_or("?"))
+            .collect();
+        assert_eq!(projects.iter().filter(|p| **p == "그대로").count(), 1);
+        let repo_rows: Vec<&&str> = projects
+            .iter()
+            .filter(|p| **p == "agent-platform-backend")
+            .collect();
+        assert_eq!(repo_rows.len(), 3); // 세션 3개가 모두 같은 프로젝트명으로
+
+        // 분석에서도 한 행으로 합쳐진다.
+        let a = crate::analyze::analyze(&data, get_tz("Asia/Seoul"));
+        let row = a
+            .projects
+            .iter()
+            .find(|p| p.project == "agent-platform-backend")
+            .expect("저장소 행");
+        assert_eq!(row.sessions, 3);
     }
 
     #[test]

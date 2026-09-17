@@ -6,9 +6,10 @@
 //!
 //! 주의: '변경량 = 노력' 프록시는 리팩터/생성 코드에 편향된다. 참고 지표로만 볼 것.
 
+use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use indexmap::IndexMap;
 use regex::Regex;
@@ -19,6 +20,19 @@ use crate::{
     render::is_meta_session,
     time::parse_iso_in,
 };
+
+// --------------------------------------------------------------------------- //
+// 집중시간 상수
+// --------------------------------------------------------------------------- //
+
+/// 이보다 긴 무활동 간격은 작업이 끊긴 것으로 보고 구간을 자른다.
+const IDLE_GAP_SECS: i64 = 30 * 60;
+/// 내부 활동 시각을 모르는 세션 하나의 상한(켜두고 방치한 터미널 방지).
+const SESSION_CAP_SECS: i64 = 8 * 3600;
+/// 프로젝트 하나가 이 분을 넘으면 집계가 깨진 것.
+const PROJECT_MAX_MINUTES: i64 = 24 * 60;
+/// 전체 합이 이 분을 넘으면 집계가 깨진 것.
+const TOTAL_MAX_MINUTES: i64 = 26 * 60;
 
 // --------------------------------------------------------------------------- //
 // 커밋 타입 분류 (conventional commit 우선, 없으면 키워드 휴리스틱)
@@ -124,12 +138,16 @@ pub struct Kpis {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProjectRollup {
     pub project: String,
+    /// 세션 구간의 **합집합**(겹치는 시간은 한 번만) 분. 30분 넘는 공백에서 잘린다.
     pub minutes: i64,
     pub sessions: u32,
     pub files: u32,
     pub commits: u32,
     pub insertions: u64,
     pub deletions: u64,
+    /// 내부 활동 시각이 없어 구간을 추정했거나 8시간 상한에 걸린 세션이 섞여 있음.
+    #[serde(default)]
+    pub estimated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -157,6 +175,10 @@ pub struct Analysis {
     pub work_style: String,
     pub highlights: Vec<String>,
     pub timeline: Vec<TimelineEvent>,
+    /// 집중시간 집계가 물리적으로 불가능한 값(프로젝트 24h 초과 또는 합계 26h 초과)이라
+    /// 믿을 수 없음. 렌더러는 이때 집중 표를 숨겨도 된다.
+    #[serde(default)]
+    pub focus_unreliable: bool,
 }
 
 // --------------------------------------------------------------------------- //
@@ -169,6 +191,108 @@ fn hm(dt: &DateTime<Utc>, tz: Tz) -> String {
 
 fn take_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
+}
+
+// --------------------------------------------------------------------------- //
+// 집중시간 — 세션 구간의 합집합 (겹침 제거 + 유휴 컷)
+// --------------------------------------------------------------------------- //
+
+/// 작업 구간 하나 — `(시작, 끝)` UTC.
+type Interval = (DateTime<Utc>, DateTime<Utc>);
+
+/// 질답의 현지 "HH:MM" → 세션 구간 안의 UTC 시각. 구간 밖이거나 못 읽으면 None.
+///
+/// 자정을 넘긴 세션도 있으므로 시작일과 다음 날 두 후보를 보고 `[first, last]` 에 드는 쪽을 쓴다.
+fn qa_instant(
+    hhmm: &str,
+    first: DateTime<Utc>,
+    last: DateTime<Utc>,
+    tz: Tz,
+) -> Option<DateTime<Utc>> {
+    let t = NaiveTime::parse_from_str(hhmm.trim(), "%H:%M").ok()?;
+    let base = first.with_timezone(&tz).date_naive();
+    for add in [0i64, 1] {
+        let Some(day) = base.checked_add_signed(Duration::days(add)) else {
+            continue;
+        };
+        let Some(local) = tz.from_local_datetime(&day.and_time(t)).earliest() else {
+            continue;
+        };
+        let utc = local.with_timezone(&Utc);
+        if utc >= first && utc <= last {
+            return Some(utc);
+        }
+    }
+    None
+}
+
+/// 세션 하나의 실제 작업 구간들. `.1` 이 true 면 추정이 섞인 구간.
+///
+/// - 세션 안의 활동 시각(질답 시각)을 알면 30분 넘는 공백마다 잘라 여러 구간으로 나눈다.
+///   점심·회의로 비운 시간이 집중시간에 들어가지 않는다.
+/// - 첫/끝 시각만 아는 세션은 그동안 계속 붙어 있었다고 볼 수밖에 없으므로 한 구간으로 두되
+///   8시간에서 자르고 추정으로 표시한다(터미널을 켜둔 채 자리를 뜬 경우 방지).
+fn session_intervals(s: &Session, tz: Tz) -> (Vec<Interval>, bool) {
+    let (Some(first), Some(last)) = (s.first_ts, s.last_ts) else {
+        return (Vec::new(), false);
+    };
+    let last = last.max(first);
+    let mut marks: Vec<DateTime<Utc>> = vec![first, last];
+    for turn in &s.qa {
+        if let Some(t) = qa_instant(&turn.time, first, last, tz) {
+            marks.push(t);
+        }
+    }
+    marks.sort_unstable();
+    marks.dedup();
+
+    // 내부 활동 시각이 없음 → 추정 구간(상한 8h)
+    if marks.len() <= 2 {
+        let end = last.min(first + Duration::seconds(SESSION_CAP_SECS));
+        let estimated = (end - first).num_seconds() > IDLE_GAP_SECS;
+        return (vec![(first, end)], estimated);
+    }
+
+    let mut out: Vec<Interval> = Vec::new();
+    let mut start = marks[0];
+    let mut prev = marks[0];
+    for m in marks.into_iter().skip(1) {
+        if (m - prev).num_seconds() > IDLE_GAP_SECS {
+            out.push((start, prev));
+            start = m;
+        }
+        prev = m;
+    }
+    out.push((start, prev));
+    (out, false)
+}
+
+/// 중복을 뺀 개수.
+fn distinct_count(items: impl IntoIterator<Item = String>) -> usize {
+    items.into_iter().collect::<BTreeSet<String>>().len()
+}
+
+/// 겹치거나 맞닿은 구간을 합쳐 실제로 일한 총 시간(초)을 구한다.
+fn union_seconds(mut intervals: Vec<Interval>) -> i64 {
+    if intervals.is_empty() {
+        return 0;
+    }
+    intervals.sort_unstable();
+    let (mut cur_s, mut cur_e) = intervals[0];
+    let mut total = 0i64;
+    for (s, e) in intervals.into_iter().skip(1) {
+        if s <= cur_e {
+            if e > cur_e {
+                cur_e = e;
+            }
+        } else {
+            total += (cur_e - cur_s).num_seconds();
+            cur_s = s;
+            cur_e = e;
+        }
+    }
+    total += (cur_e - cur_s).num_seconds();
+    total.max(0)
 }
 
 pub fn analyze(data: &DailyData, tz: Tz) -> Analysis {
@@ -195,9 +319,11 @@ pub fn analyze(data: &DailyData, tz: Tz) -> Analysis {
         .as_ref()
         .map(|g| g.repos().len() as u32)
         .unwrap_or(0);
-    a.kpis.sessions = sessions.len() as u32;
+    // 세션 수·파일 수는 **중복 제거 뒤** 값이어야 한다(같은 세션·같은 파일을 두 번 세지 않는다).
+    a.kpis.sessions = distinct_count(sessions.iter().map(|s| s.dedupe_key())) as u32;
     a.kpis.tokens = sessions.iter().map(|s| s.output_tokens).sum();
-    a.kpis.files_edited = sessions.iter().map(|s| s.files_edited.len() as u32).sum();
+    a.kpis.files_edited =
+        distinct_count(sessions.iter().flat_map(|s| s.files_edited.iter().cloned())) as u32;
 
     let mut times: Vec<DateTime<Utc>> = commits.iter().map(|c| c.when).collect();
     times.extend(sessions.iter().filter_map(|s| s.first_ts));
@@ -222,18 +348,44 @@ pub fn analyze(data: &DailyData, tz: Tz) -> Analysis {
     a.work_style = work_style(&a.tool_profile);
 
     // --- 프로젝트별 롤업 (세션 project ↔ git repo 이름으로 조인, 첫 등장 순서) ---
+    //
+    // 집중시간은 세션 길이의 '합'이 아니라 구간의 **합집합**이다. 한 프로젝트를 여러 창
+    // (worktree·병렬 에이전트)에서 동시에 붙잡고 있어도 벽시계 시간은 한 번만 센다.
     let mut roll: IndexMap<String, ProjectRollup> = IndexMap::new();
+    let mut spans: IndexMap<String, Vec<Interval>> = IndexMap::new();
+    let mut proj_keys: IndexMap<String, BTreeSet<String>> = IndexMap::new();
+    let mut proj_files: IndexMap<String, BTreeSet<String>> = IndexMap::new();
     for s in &sessions {
         let proj = s.project.clone().unwrap_or_else(|| "?".into());
         let r = roll.entry(proj.clone()).or_insert_with(|| ProjectRollup {
-            project: proj,
+            project: proj.clone(),
             ..Default::default()
         });
-        r.sessions += 1;
-        r.files += s.files_edited.len() as u32;
-        if let (Some(f), Some(l)) = (s.first_ts, s.last_ts) {
-            let mins = (l - f).num_seconds().div_euclid(60);
-            r.minutes += mins.max(0);
+        proj_keys
+            .entry(proj.clone())
+            .or_default()
+            .insert(s.dedupe_key());
+        proj_files
+            .entry(proj.clone())
+            .or_default()
+            .extend(s.files_edited.iter().cloned());
+        let (iv, estimated) = session_intervals(s, tz);
+        r.estimated |= estimated;
+        spans.entry(proj).or_default().extend(iv);
+    }
+    for (proj, iv) in spans {
+        if let Some(r) = roll.get_mut(&proj) {
+            r.minutes = union_seconds(iv).div_euclid(60);
+        }
+    }
+    for (proj, keys) in proj_keys {
+        if let Some(r) = roll.get_mut(&proj) {
+            r.sessions = keys.len() as u32;
+        }
+    }
+    for (proj, files) in proj_files {
+        if let Some(r) = roll.get_mut(&proj) {
+            r.files = files.len() as u32;
         }
     }
     for c in commits {
@@ -248,6 +400,19 @@ pub fn analyze(data: &DailyData, tz: Tz) -> Analysis {
     let mut projects: Vec<ProjectRollup> = roll.into_values().collect();
     projects.sort_by_key(|p| std::cmp::Reverse((p.minutes, p.commits, p.files)));
     a.projects = projects;
+
+    // --- 집중시간 건전성 가드 ---
+    let total_minutes: i64 = a.projects.iter().map(|p| p.minutes).sum();
+    let worst = a.projects.iter().map(|p| p.minutes).max().unwrap_or(0);
+    if worst > PROJECT_MAX_MINUTES || total_minutes > TOTAL_MAX_MINUTES {
+        a.focus_unreliable = true;
+        tracing::warn!(
+            "집중시간 집계가 물리적으로 불가능합니다({} 최대 {}분, 합계 {}분) — 표를 숨깁니다",
+            data.target_date,
+            worst,
+            total_minutes
+        );
+    }
 
     // --- 핵심 성과 (Top 3) ---
     a.highlights = highlights(commits, &sessions);
@@ -595,6 +760,253 @@ pub(crate) mod tests {
         let a = analyze(&d, get_tz("Asia/Seoul"));
         assert_eq!(a.highlights, vec!["기능 구현 (repoA, 2파일)"]);
         assert!(a.kpis.span_start.is_some());
+    }
+
+    /// 세션 구간을 만드는 헬퍼(질답 시각은 현지 "HH:MM").
+    fn sess(project: &str, id: &str, from: &str, to: &str, qa: &[&str]) -> Session {
+        Session {
+            session_id: Some(id.into()),
+            project: Some(project.into()),
+            title: Some(format!("작업 {id}")),
+            first_ts: Some(t(from)),
+            last_ts: Some(t(to)),
+            qa: qa
+                .iter()
+                .map(|time| crate::model::QaTurn {
+                    time: (*time).into(),
+                    question: format!("q{time}"),
+                    answer: String::new(),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn day_with(sessions: Vec<Session>) -> DailyData {
+        let mut d = DailyData::new(NaiveDate::from_ymd_opt(2026, 9, 16).unwrap(), "Asia/Seoul");
+        d.claude = Some(SessionData { sessions });
+        d
+    }
+
+    /// 겹치는 세션 3개는 벽시계 합집합으로 센다(길이 합이 아니라).
+    #[test]
+    fn focus_time_is_the_union_of_overlapping_sessions() {
+        // 09:00–11:00 · 10:00–12:00 · 11:30–13:00 (KST) — 합 330분, 합집합 240분
+        let d = day_with(vec![
+            sess(
+                "repo",
+                "1",
+                "2026-09-16T00:00:00Z",
+                "2026-09-16T02:00:00Z",
+                &[],
+            ),
+            sess(
+                "repo",
+                "2",
+                "2026-09-16T01:00:00Z",
+                "2026-09-16T03:00:00Z",
+                &[],
+            ),
+            sess(
+                "repo",
+                "3",
+                "2026-09-16T02:30:00Z",
+                "2026-09-16T04:00:00Z",
+                &[],
+            ),
+        ]);
+        let a = analyze(&d, get_tz("Asia/Seoul"));
+        assert_eq!(a.projects.len(), 1);
+        assert_eq!(a.projects[0].minutes, 240);
+        assert_eq!(a.projects[0].sessions, 3);
+        assert!(a.projects[0].estimated); // 내부 활동 시각이 없어 추정
+        assert!(!a.focus_unreliable);
+        assert_eq!(a.kpis.sessions, 3);
+
+        // 떨어져 있으면 그대로 더해진다(합집합이 곧 합).
+        let d = day_with(vec![
+            sess(
+                "repo",
+                "1",
+                "2026-09-16T00:00:00Z",
+                "2026-09-16T01:00:00Z",
+                &[],
+            ),
+            sess(
+                "repo",
+                "2",
+                "2026-09-16T05:00:00Z",
+                "2026-09-16T06:00:00Z",
+                &[],
+            ),
+        ]);
+        assert_eq!(analyze(&d, get_tz("Asia/Seoul")).projects[0].minutes, 120);
+    }
+
+    /// 세션 안에 30분 넘는 공백이 있으면 그 사이는 집중시간에서 빠진다.
+    #[test]
+    fn idle_gaps_are_cut_out_of_focus_time() {
+        // 09:00 시작 → 09:10 질답 → (2시간 50분 공백) → 12:00·12:10 질답 → 12:20 종료
+        let d = day_with(vec![sess(
+            "repo",
+            "1",
+            "2026-09-16T00:00:00Z",
+            "2026-09-16T03:20:00Z",
+            &["09:10", "12:00", "12:10"],
+        )]);
+        let a = analyze(&d, get_tz("Asia/Seoul"));
+        // 첫/끝만 봤다면 200분. 유휴 컷으로 10분 + 20분 = 30분만 남는다.
+        assert_eq!(a.projects[0].minutes, 30);
+        assert!(!a.projects[0].estimated); // 내부 활동 시각을 알므로 추정 아님
+
+        // 질답이 촘촘하면(모두 30분 이내) 한 구간으로 이어진다.
+        let d = day_with(vec![sess(
+            "repo",
+            "1",
+            "2026-09-16T00:00:00Z",
+            "2026-09-16T01:00:00Z",
+            &["09:20", "09:45"],
+        )]);
+        assert_eq!(analyze(&d, get_tz("Asia/Seoul")).projects[0].minutes, 60);
+    }
+
+    /// 첫/끝 시각만 아는 세션은 8시간에서 자르고 추정으로 표시한다.
+    #[test]
+    fn unknown_activity_session_is_capped_at_eight_hours() {
+        let d = day_with(vec![sess(
+            "repo",
+            "1",
+            "2026-09-16T00:00:00Z",
+            "2026-09-16T20:00:00Z", // 20시간
+            &[],
+        )]);
+        let a = analyze(&d, get_tz("Asia/Seoul"));
+        assert_eq!(a.projects[0].minutes, 8 * 60);
+        assert!(a.projects[0].estimated);
+        // 30분 이하의 짧은 세션은 추정 표시를 붙이지 않는다.
+        let d = day_with(vec![sess(
+            "repo",
+            "1",
+            "2026-09-16T00:00:00Z",
+            "2026-09-16T00:20:00Z",
+            &[],
+        )]);
+        let a = analyze(&d, get_tz("Asia/Seoul"));
+        assert_eq!(a.projects[0].minutes, 20);
+        assert!(!a.projects[0].estimated);
+    }
+
+    /// 프로젝트 하나가 24시간을 넘으면 집계를 믿을 수 없다고 표시한다.
+    #[test]
+    fn focus_guard_flags_impossible_totals() {
+        // 8시간짜리 네 구간이 겹치지 않게 늘어서면 32시간 → 물리적으로 불가능
+        let d = day_with(vec![
+            sess(
+                "repo",
+                "1",
+                "2026-09-16T00:00:00Z",
+                "2026-09-16T08:00:00Z",
+                &[],
+            ),
+            sess(
+                "repo",
+                "2",
+                "2026-09-16T08:01:00Z",
+                "2026-09-16T16:01:00Z",
+                &[],
+            ),
+            sess(
+                "repo",
+                "3",
+                "2026-09-16T16:02:00Z",
+                "2026-09-17T00:02:00Z",
+                &[],
+            ),
+            sess(
+                "repo",
+                "4",
+                "2026-09-17T00:03:00Z",
+                "2026-09-17T08:03:00Z",
+                &[],
+            ),
+        ]);
+        let a = analyze(&d, get_tz("Asia/Seoul"));
+        assert_eq!(a.projects[0].minutes, 32 * 60);
+        assert!(a.focus_unreliable);
+
+        // 정상적인 하루는 표시되지 않는다.
+        assert!(!analyze(&sample(), get_tz("Asia/Seoul")).focus_unreliable);
+    }
+
+    /// 회귀 고정 — 2026-09-16 `agent-platform-backend`(worktree 3개) 모양.
+    /// 예전엔 세션 길이를 더해 23h32m 이 나왔다. 이제 한 행 · 10시간 미만.
+    #[test]
+    fn worktree_overlap_no_longer_inflates_focus_time() {
+        let sessions = vec![
+            sess(
+                "agent-platform-backend",
+                "w1",
+                "2026-09-16T00:00:00Z",
+                "2026-09-16T07:32:00Z", // 452분
+                &[],
+            ),
+            sess(
+                "agent-platform-backend",
+                "w2",
+                "2026-09-16T00:30:00Z",
+                "2026-09-16T08:30:00Z", // 480분
+                &[],
+            ),
+            sess(
+                "agent-platform-backend",
+                "w3",
+                "2026-09-16T01:00:00Z",
+                "2026-09-16T09:00:00Z", // 480분
+                &[],
+            ),
+        ];
+        // 예전 방식(길이 합) = 23시간 32분
+        let old: i64 = sessions
+            .iter()
+            .map(|s| (s.last_ts.unwrap() - s.first_ts.unwrap()).num_seconds() / 60)
+            .sum();
+        assert_eq!(old, 23 * 60 + 32);
+
+        let a = analyze(&day_with(sessions), get_tz("Asia/Seoul"));
+        let rows: Vec<&ProjectRollup> = a
+            .projects
+            .iter()
+            .filter(|p| p.project == "agent-platform-backend")
+            .collect();
+        assert_eq!(rows.len(), 1, "worktree 3개가 한 행으로");
+        assert_eq!(rows[0].sessions, 3);
+        assert_eq!(rows[0].minutes, 9 * 60); // 09:00–18:00 KST 합집합
+        assert!(rows[0].minutes < 10 * 60, "10시간 미만");
+        assert!(!a.focus_unreliable);
+    }
+
+    /// 같은 파일을 여러 세션에서 만져도 파일 수는 한 번만 센다.
+    #[test]
+    fn file_counts_are_deduped() {
+        let mut a1 = sess(
+            "repo",
+            "1",
+            "2026-09-16T00:00:00Z",
+            "2026-09-16T01:00:00Z",
+            &[],
+        );
+        a1.files_edited = vec!["a.rs".into(), "b.rs".into()];
+        let mut a2 = sess(
+            "repo",
+            "2",
+            "2026-09-16T02:00:00Z",
+            "2026-09-16T03:00:00Z",
+            &[],
+        );
+        a2.files_edited = vec!["b.rs".into(), "c.rs".into()];
+        let a = analyze(&day_with(vec![a1, a2]), get_tz("Asia/Seoul"));
+        assert_eq!(a.kpis.files_edited, 3);
+        assert_eq!(a.projects[0].files, 3);
     }
 
     #[test]

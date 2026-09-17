@@ -26,7 +26,7 @@ use crate::{
     model::{CalendarData, DailyData, GitCommit, GitData, NoteItem, Session, SessionData},
     notes,
     render::is_meta_session,
-    service::{self, disambiguate_repo_names},
+    service::{self, disambiguate_repo_names, normalize_sessions},
     store::Store,
     time::TimeError,
     watch::{Changed, WatchTargets},
@@ -173,8 +173,8 @@ impl Live {
                 let count = match (*n, state) {
                     (_, SourceState::Ok) => match *n {
                         "git" => self.git.values().map(|(_, c)| c.len()).sum(),
-                        "claude" => self.claude.values().filter(|s| !is_meta_session(s)).count(),
-                        "codex" => self.codex.values().filter(|s| !is_meta_session(s)).count(),
+                        "claude" => distinct_sessions(&self.claude),
+                        "codex" => distinct_sessions(&self.codex),
                         "naverworks" => self.calendar.as_ref().map(|c| c.events.len()).unwrap_or(0),
                         _ => 0,
                     },
@@ -521,6 +521,8 @@ impl Live {
             data.git = Some(GitData { commits });
         }
         data.calendar = self.calendar.clone();
+        // 같은 세션이 worktree·이어받기로 여러 파일에 걸쳐 있으면 먼저 하나로 합친다.
+        normalize_sessions(&mut data);
         disambiguate_repo_names(&mut data);
 
         let statuses = self.statuses();
@@ -530,6 +532,18 @@ impl Live {
         self.data = data;
         delta
     }
+}
+
+/// 파일 단위 세션 맵 → 실제 세션 수. 한 세션이 여러 파일(worktree·이어받기)에 걸쳐 있어도 1건.
+fn distinct_sessions(map: &BTreeMap<PathBuf, Session>) -> usize {
+    let mut keys: Vec<String> = map
+        .values()
+        .filter(|s| !is_meta_session(s))
+        .map(|s| s.dedupe_key())
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys.len()
 }
 
 fn file_name(p: &Path) -> String {

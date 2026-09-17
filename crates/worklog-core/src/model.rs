@@ -86,6 +86,16 @@ pub enum Agent {
     Codex,
 }
 
+impl Agent {
+    /// 직렬화 이름과 같은 소문자 태그.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub session_id: Option<String>,
@@ -122,6 +132,28 @@ pub struct Session {
 }
 
 impl Session {
+    /// 같은 세션이 여러 로그 파일(worktree·이어받기)로 쪼개져 들어왔을 때 하나로 묶는 키.
+    ///
+    /// `session_id` 가 있으면 그것을, 없으면 `(cwd, 시작 분)` 을 쓴다. 에이전트가 다르면
+    /// id 공간이 달라 우연히 겹칠 수 있으므로 항상 앞에 에이전트 태그를 붙인다.
+    pub fn dedupe_key(&self) -> String {
+        let agent = self.agent.as_str();
+        if let Some(id) = self
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return format!("{agent}:id:{id}");
+        }
+        let cwd = self.cwd.as_deref().unwrap_or("");
+        let minute = self
+            .first_ts
+            .map(|t| t.format("%Y-%m-%dT%H:%M").to_string())
+            .unwrap_or_default();
+        format!("{agent}:cwd:{cwd}@{minute}")
+    }
+
     /// 표시용 제목: ai-title → 첫 프롬프트(60자) → "(제목 없음)".
     pub fn display_title(&self) -> String {
         let t = self.title.as_deref().map(str::trim).unwrap_or("");
@@ -356,6 +388,59 @@ mod tests {
         assert_eq!(s.display_title().chars().count(), 60);
         s.title = Some(" 제목 ".into());
         assert_eq!(s.display_title(), "제목");
+    }
+
+    #[test]
+    fn dedupe_key_prefers_session_id_then_cwd_and_minute() {
+        let base = Session {
+            session_id: Some("S".into()),
+            cwd: Some("D:/repo".into()),
+            first_ts: Some(Utc::now()),
+            ..Default::default()
+        };
+        // 같은 id 면 cwd(worktree)가 달라도 같은 세션
+        let other = Session {
+            cwd: Some("D:/wt".into()),
+            first_ts: None,
+            ..base.clone()
+        };
+        assert_eq!(base.dedupe_key(), other.dedupe_key());
+        // 에이전트가 다르면 id 가 같아도 다른 세션
+        let codex = Session {
+            agent: Agent::Codex,
+            ..base.clone()
+        };
+        assert_ne!(base.dedupe_key(), codex.dedupe_key());
+        assert!(codex.dedupe_key().starts_with("codex:id:"));
+
+        // id 가 없으면 (cwd, 시작 분)
+        let ts = |s: &str| Some(DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc));
+        let no_id = |cwd: &str, t: &str| Session {
+            session_id: None,
+            cwd: Some(cwd.into()),
+            first_ts: ts(t),
+            ..Default::default()
+        };
+        assert_eq!(
+            no_id("D:/a", "2026-09-16T01:00:10Z").dedupe_key(),
+            no_id("D:/a", "2026-09-16T01:00:50Z").dedupe_key()
+        );
+        assert_ne!(
+            no_id("D:/a", "2026-09-16T01:00:10Z").dedupe_key(),
+            no_id("D:/a", "2026-09-16T01:01:10Z").dedupe_key()
+        );
+        assert_ne!(
+            no_id("D:/a", "2026-09-16T01:00:10Z").dedupe_key(),
+            no_id("D:/b", "2026-09-16T01:00:10Z").dedupe_key()
+        );
+        // 빈 문자열 id 는 없는 것으로 본다
+        let blank = Session {
+            session_id: Some("  ".into()),
+            cwd: Some("D:/a".into()),
+            ..Default::default()
+        };
+        assert!(blank.dedupe_key().contains(":cwd:"));
+        assert_eq!(Agent::Claude.as_str(), "claude");
     }
 
     #[test]
