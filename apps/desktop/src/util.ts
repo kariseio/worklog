@@ -104,3 +104,72 @@ export function renderMarkdown(md: string): string {
 export function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
 }
+
+// ---- 공유용 마크다운 ----------------------------------------------------------- //
+//
+// 일지 원문에서 남 앞에 두기 곤란한 것(집계 지표 · 접어 둔 타임라인 · 수집 데이터 원본 ·
+// 내 PC 의 절대경로)만 덜어 내고, LLM 이 쓴 성과 · 결정 · 프로젝트 문장은 그대로 남긴다.
+// 순수 함수 — 같은 입력이면 늘 같은 출력.
+
+/** 이 제목을 만나면 그 줄부터 문서 끝까지 잘라 낸다(지표 아래는 전부 결정론적 집계). */
+const SHARE_CUT_HEADINGS = ["지표", "타임라인"];
+
+/** "## 📊 지표" → "지표", "## 오늘의 성과" → "오늘의성과". 제목 줄이 아니면 null. */
+function headingKey(line: string): string | null {
+  const m = /^#{1,6}\s+(.*)$/.exec(line);
+  if (!m) return null;
+  // 이모지 · 공백 · 구분 기호를 털어 낸 한글/영숫자만 남긴다.
+  return m[1].replace(/[^0-9A-Za-z\uac00-\ud7a3]+/g, "");
+}
+
+/** `<details>…</details>` 블록 제거(닫히지 않았으면 문서 끝까지). */
+function stripDetails(md: string): string {
+  return md.replace(/<details\b[\s\S]*?<\/details>[^\S\n]*\n?/gi, "").replace(/<details\b[\s\S]*$/i, "");
+}
+
+/** `## 지표`(또는 `## 타임라인`) 줄부터 끝까지 잘라 낸다. */
+function cutAtMetrics(md: string): string {
+  const lines = md.split("\n");
+  const at = lines.findIndex((l) => {
+    const k = headingKey(l);
+    return k !== null && SHARE_CUT_HEADINGS.includes(k);
+  });
+  return at < 0 ? md : lines.slice(0, at).join("\n");
+}
+
+/** "D:\study\Daily Work Log\src\util.ts" → "util.ts". */
+function baseName(p: string): string {
+  const parts = p.split(/[\\/]+/).filter((s) => s.length > 0);
+  return parts.length ? parts[parts.length - 1] : p;
+}
+
+// 경로 앞에는 줄머리이거나 공백·따옴표·괄호 같은 구분자가 와야 한다(URL 안의 "/home/…" 오인 방지).
+// 경로에 쓸 수 없는 문자(따옴표 · 꺾쇠 · 파이프 · 와일드카드)에서 멈춘다. 중간 마디는 공백을 허용하고
+// ("Daily Work Log" 처럼 폴더 이름에 공백이 들어가므로), 마지막 마디는 공백에서 끊는다.
+/** `D:\a\b.ts` · `C:/Users/me/b.ts` */
+const WIN_PATH = /(^|[\s(\[{<"'`|])([A-Za-z]:[\\/](?:[^\\/\n\r"'`<>|*?]+[\\/])*[^\\/\s"'`<>|*?]*)/gm;
+/** `/home/me/b.ts` · `/Users/me/b.ts` */
+const NIX_PATH = /(^|[\s(\[{<"'`|])(\/(?:home|Users|root|mnt|media)\/(?:[^/\n\r"'`<>|*?]+\/)*[^/\s"'`<>|*?]*)/gm;
+
+/** 내 PC 의 절대경로를 파일명만 남기고 지운다. */
+function stripLocalPaths(md: string): string {
+  const cut = (_m: string, lead: string, path: string) => `${lead}${baseName(path)}`;
+  return md.replace(WIN_PATH, cut).replace(NIX_PATH, cut);
+}
+
+/**
+ * 일지 원문(full_md) → 공유용 마크다운.
+ *
+ * 남기는 것: 제목 줄, `> 한 줄 요약`, LLM 이 쓴 모든 섹션(성과 · 결정 · 프로젝트별 진행 · 흐름 등).
+ * 빼는 것: `## 지표` 이후 전부(지표 줄 · 프로젝트별 집중 표 · 타임라인), `<details>` 블록,
+ *          로컬 절대경로(파일명만 남김).
+ */
+export function shareableMarkdown(fullMd: string): string {
+  const body = stripLocalPaths(cutAtMetrics(stripDetails(fullMd)))
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd()
+    // 부록 앞에 있던 구분선(---)이 꼬리로 남지 않게.
+    .replace(/(?:\n[^\S\n]*(?:-{3,}|\*{3,}|_{3,})[^\S\n]*)+$/, "")
+    .trimEnd();
+  return body ? `${body}\n` : "";
+}

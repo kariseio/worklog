@@ -18,7 +18,18 @@ import {
   toast,
 } from "../store";
 import { TEMPLATE_FALLBACK, loadTemplates, templateName } from "../templates";
-import { debounce, fmtDateLong, fmtDateShort, fmtTime, isWeekend, parseDate, renderMarkdown, toDateStr, todayStr } from "../util";
+import {
+  debounce,
+  fmtDateLong,
+  fmtDateShort,
+  fmtTime,
+  isWeekend,
+  parseDate,
+  renderMarkdown,
+  shareableMarkdown,
+  toDateStr,
+  todayStr,
+} from "../util";
 import "./journal.css";
 
 // ---- 날짜 도우미 --------------------------------------------------------------- //
@@ -118,6 +129,27 @@ function snippet(md: string, q: string): string | null {
     line = `${from > 0 ? "…" : ""}${line.slice(from, from + 80)}…`;
   }
   return line;
+}
+
+/**
+ * 클립보드에 텍스트와 HTML 을 함께 넣는다 — 붙여 넣는 곳(메일·Notion·워드)이 서식을 살릴 수 있게.
+ * 웹뷰가 `ClipboardItem` 을 막으면 마크다운 텍스트만 넣는다.
+ */
+async function writeClipboard(text: string, html: string): Promise<void> {
+  if (typeof ClipboardItem === "function" && typeof navigator.clipboard?.write === "function") {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": new Blob([text], { type: "text/plain" }),
+          "text/html": new Blob([html], { type: "text/html" }),
+        }),
+      ]);
+      return;
+    } catch {
+      // 서식 복사를 막는 웹뷰 — 아래 텍스트 복사로 떨어진다.
+    }
+  }
+  await navigator.clipboard.writeText(text);
 }
 
 const SINK_LABEL: Record<string, string> = { markdown: "로컬 md", obsidian: "Obsidian", notion: "Notion" };
@@ -530,6 +562,19 @@ export default function Journal() {
     try {
       await navigator.clipboard.writeText(d.full_md);
       toast("복사했습니다", "ok");
+    } catch (e) {
+      toast(errText(e), "error");
+    }
+  }
+
+  /** 남에게 보낼 몫만 — 지표·타임라인·수집 원본·로컬 절대경로를 뺀 마크다운. 원본 문서는 건드리지 않는다. */
+  async function copyShare() {
+    const d = cur();
+    if (!d) return;
+    const md = shareableMarkdown(d.full_md);
+    try {
+      await writeClipboard(md, renderMarkdown(md));
+      toast("공유용으로 복사했습니다 · 지표·타임라인·경로 제외", "ok");
     } catch (e) {
       toast(errText(e), "error");
     }
@@ -1003,8 +1048,17 @@ export default function Journal() {
                         </Show>
                       </div>
                     </Show>
-                    <Button icon="copy" title="복사" aria-label="복사" onClick={() => void copyDoc()}>
+                    <Button icon="copy" title="문서 전체를 마크다운으로 복사" aria-label="복사" onClick={() => void copyDoc()}>
                       <span class="journal-btn-label">복사</span>
+                    </Button>
+                    <Button
+                      icon="external"
+                      class="journal-share"
+                      title="지표 · 타임라인 · 로컬 경로를 뺀 공유용으로 복사"
+                      aria-label="공유용 복사"
+                      onClick={() => void copyShare()}
+                    >
+                      <span class="journal-btn-label">공유용 복사</span>
                     </Button>
                   </Show>
                 </>

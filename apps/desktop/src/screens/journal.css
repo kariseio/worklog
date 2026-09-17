@@ -372,6 +372,11 @@
   flex: none;
 }
 
+/* '공유용 복사' — 좁아져도 줄어들지 않게 */
+.journal-share {
+  flex: none;
+}
+
 /* '다시 생성' — 본체 버튼에 템플릿 메뉴를 여는 꺾쇠를 붙인 한 덩어리 */
 .journal-regen {
   position: relative;
