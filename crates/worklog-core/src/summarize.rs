@@ -409,6 +409,78 @@ impl SummaryOutcome {
 /// 병합(reduce)이 실패해 세션별 압축본만 붙였을 때 문서 맨 앞에 남는 표시.
 pub const PARTIAL_HEADING: &str = "(부분 요약 — 병합 단계 실패, 세션별 요약을 그대로 붙임)";
 
+/// 응답이 오긴 왔는데 요약이 아닐 때(인사말·거절문)의 실패 사유.
+pub const IMPLAUSIBLE_SUMMARY: &str = "요약 응답이 요약이 아님(인사말/거절)";
+
+/// 인사말·거절문 서명 — 소문자로 바꿔 부분 일치로 본다(한글 서명은 대소문자 영향 없음).
+const BOILERPLATE: &[&str] = &[
+    "i'll help you",
+    "what would you like",
+    "how can i help",
+    "i can't help",
+    "죄송",
+    "도와드릴까요",
+    "무엇을 도와",
+];
+
+/// 이 응답을 '요약' 으로 볼 수 있는가.
+///
+/// 강제 실패 실험(09-15)에서 조각 하나가
+/// `I'll help you with your work. What would you like me to do?` 로 돌아와 그대로 문서에 붙었다.
+/// 비지 않았다는 것만으로는 성공이 아니다 — 아래 중 하나라도 걸리면 **실패로 친다**(시간 초과와 동일 취급).
+///   * 다듬은 길이가 20자 미만
+///   * 한글이 하나도 없고 불릿·머리글 줄도 없음
+///   * 인사말·거절문 서명([`BOILERPLATE`])이 들어 있음
+pub fn plausible_summary(text: &str) -> bool {
+    let t = text.trim();
+    if t.chars().count() < 20 {
+        return false;
+    }
+    let lower = t.to_lowercase();
+    if BOILERPLATE.iter().any(|b| lower.contains(b)) {
+        return false;
+    }
+    t.chars().any(is_hangul) || t.lines().any(is_bullet_or_heading)
+}
+
+/// 한글(음절·자모)인가.
+fn is_hangul(c: char) -> bool {
+    matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}')
+}
+
+/// `- `·`*`·`•`·`#` 로 시작하거나 `1.`·`1)` 로 시작하는 줄(=개조식·머리글).
+fn is_bullet_or_heading(line: &str) -> bool {
+    let l = line.trim_start();
+    let b = l.as_bytes();
+    if matches!(b.first(), Some(b'-' | b'*' | b'#')) || l.starts_with('•') {
+        return true;
+    }
+    let n = b.iter().take_while(|c| c.is_ascii_digit()).count();
+    n > 0 && matches!(b.get(n), Some(b'.' | b')'))
+}
+
+/// 세션 압축(map)이 실패했을 때 부분 요약에 남길 질답 원문 줄 수 상한(세션당).
+pub const VERBATIM_QA_LINES: usize = 8;
+
+/// 압축이 실패한 세션의 폴백 본문 — 질답 원문(`- HH:MM Q: … → A: …`)을 앞에서 여덟 줄만 남기고
+/// 나머지는 `- … 외 N개 질답 생략` 한 줄로 접는다(부분 요약 문서 전체 길이 제한).
+fn verbatim_fallback(block: &str) -> String {
+    let body = block_body(block);
+    let lines: Vec<&str> = body
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    if lines.len() <= VERBATIM_QA_LINES {
+        return lines.join("\n");
+    }
+    let omitted = lines.len() - VERBATIM_QA_LINES;
+    format!(
+        "{}\n- … 외 {omitted}개 질답 생략",
+        lines[..VERBATIM_QA_LINES].join("\n")
+    )
+}
+
 /// 세션별 압축본을 그대로 이어 붙인 '부분 요약' 본문.
 fn partial_text(condensed: &[(String, String)]) -> String {
     let body = condensed
@@ -514,11 +586,17 @@ impl Summarizer {
         availability: &str,
     ) -> Result<String, String> {
         self.report("요약", "종합");
-        self.call_detailed(
+        let out = self.call_detailed(
             system,
             &user_prompt(date_iso, signal, availability),
             &self.cfg,
-        )
+        )?;
+        // 응답이 와도 요약이 아니면(인사말·거절) 실패다 — 그대로 문서에 붙이지 않는다.
+        if !plausible_summary(&out) {
+            tracing::warn!("종합(reduce) 응답이 요약이 아님: {}", snippet(&out));
+            return Err(IMPLAUSIBLE_SUMMARY.to_string());
+        }
+        Ok(out)
     }
 
     /// 표준 템플릿으로 단일 호출 요약. provider 가 none 이면 None.
@@ -726,13 +804,26 @@ impl Summarizer {
             };
             let summ = self.call_map(CONDENSE_SYSTEM_KO, &big);
             finished(self);
+            // 폴백은 이미 만든 조각요약(big) 우선, 그것도 비면 세션 원문에서 질답을 가져온다.
+            let fallback = || {
+                let v = verbatim_fallback(&big);
+                if v.is_empty() {
+                    verbatim_fallback(block)
+                } else {
+                    v
+                }
+            };
             match summ {
-                Ok(s) => {
+                Ok(s) if plausible_summary(&s) => {
                     ok_calls.fetch_add(1, Ordering::Relaxed);
                     (label.clone(), s.trim().to_string())
                 }
-                // 최종 압축 실패 시엔 (원문 block 이 아니라) 이미 만든 조각요약 big 으로 폴백.
-                Err(_) => (label.clone(), block_body(&big).trim().to_string()),
+                // 요약이 아닌 응답(인사말·거절)은 시간 초과와 같게 — 실패로 치고 폴백한다.
+                Ok(s) => {
+                    tracing::warn!("세션 압축 응답이 요약이 아님({label}): {}", snippet(&s));
+                    (label.clone(), fallback())
+                }
+                Err(_) => (label.clone(), fallback()),
             }
         };
         let out: Vec<(String, String)> = match pool {
@@ -766,7 +857,10 @@ impl Summarizer {
         let mut parts: Vec<String> = Vec::new();
         for (i, ch) in chunks.iter().enumerate() {
             let prompt = format!("{header}\n(파트 {}/{total})\n{ch}", i + 1);
-            if let Ok(s) = self.call_map(CONDENSE_SYSTEM_KO, &prompt) {
+            // 조각 요약도 '요약처럼 생긴' 응답만 받는다 — 인사말·거절은 그 조각을 버린다.
+            if let Ok(s) = self.call_map(CONDENSE_SYSTEM_KO, &prompt)
+                && plausible_summary(&s)
+            {
                 ok_calls.fetch_add(1, Ordering::Relaxed);
                 parts.push(s.trim().to_string());
             }
@@ -790,7 +884,12 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// system 프롬프트를 기록하고 "요약" 을 돌려주는 가짜 호출기.
+    /// 가짜 호출기가 돌려주는 '요약처럼 생긴' 응답 — 20자 이상·한글·불릿([`plausible_summary`]).
+    const FAKE_SUMMARY: &str = "- 10:00 오늘 작업 요약 한 줄입니다 (a1b2c3d)";
+    /// 세션별 압축(map) 자리의 가짜 응답.
+    const FAKE_CONDENSED: &str = "- 10:00 세션 압축 한 줄입니다 (요청·결정 정리)";
+
+    /// system 프롬프트를 기록하고 요약 한 줄을 돌려주는 가짜 호출기.
     struct Fake(Mutex<Vec<String>>);
     impl LlmCaller for Fake {
         fn call(
@@ -801,7 +900,7 @@ mod tests {
             _cancel: Option<&AtomicBool>,
         ) -> Option<String> {
             self.0.lock().unwrap().push(system.to_string());
-            Some("요약".into())
+            Some(FAKE_SUMMARY.into())
         }
     }
 
@@ -868,7 +967,7 @@ mod tests {
         assert_eq!(
             s.summarize_day("## Git\n- 커밋", "2026-07-08", "")
                 .as_deref(),
-            Some("요약")
+            Some(FAKE_SUMMARY)
         );
         // SAFETY: caller 는 Summarizer 가 살아있는 동안 유효.
         let calls = unsafe { &*ptr }.0.lock().unwrap().clone();
@@ -884,7 +983,7 @@ mod tests {
         assert_eq!(
             s.summarize_day_with(&want, "## Git\n- 커밋", "2026-07-08", "")
                 .as_deref(),
-            Some("요약")
+            Some(FAKE_SUMMARY)
         );
         // SAFETY: caller 는 Summarizer 가 살아있는 동안 유효.
         let calls = unsafe { &*ptr }.0.lock().unwrap().clone();
@@ -910,7 +1009,7 @@ mod tests {
         assert!(signal.chars().count() > 1500);
         assert_eq!(
             s.summarize_day(&signal, "2026-07-08", "").as_deref(),
-            Some("요약")
+            Some(FAKE_SUMMARY)
         );
         let calls = unsafe { &*ptr }.0.lock().unwrap().clone();
         assert_eq!(
@@ -933,7 +1032,7 @@ mod tests {
         let signal = format!("## Git\n- x\n\n{SESSION_SECTION_HEADER}\n{big}");
         assert_eq!(
             s.summarize_day(&signal, "2026-07-08", "").as_deref(),
-            Some("요약")
+            Some(FAKE_SUMMARY)
         );
         let calls = unsafe { &*ptr }.0.lock().unwrap().clone();
         assert!(
@@ -990,8 +1089,8 @@ mod tests {
             match (is_map, &self.map_err, &self.reduce_err) {
                 (true, Some(e), _) => Err(e.clone()),
                 (false, _, Some(e)) => Err(e.clone()),
-                (true, None, _) => Ok("세션 압축".into()),
-                (false, _, None) => Ok("요약".into()),
+                (true, None, _) => Ok(FAKE_CONDENSED.into()),
+                (false, _, None) => Ok(FAKE_SUMMARY.into()),
             }
         }
     }
@@ -1020,7 +1119,7 @@ mod tests {
         assert_eq!(
             s.summarize_day(&heavy_signal(), "2026-09-14", "")
                 .as_deref(),
-            Some("요약")
+            Some(FAKE_SUMMARY)
         );
         // SAFETY: caller 는 Summarizer 가 살아있는 동안 유효.
         let seen = unsafe { &*ptr }.seen.lock().unwrap().clone();
@@ -1072,7 +1171,7 @@ mod tests {
         // (c) 정상.
         let s = Summarizer::with_caller(cfg(1500, 2), Box::new(Scripted::new(None, None)));
         let o = s.summarize_day_outcome(&standard(), "## Git\n- 커밋", "2026-09-14", "");
-        assert_eq!(o, SummaryOutcome::ok("요약"));
+        assert_eq!(o, SummaryOutcome::ok(FAKE_SUMMARY));
 
         // (d) 단일 호출 실패 — 사유 그대로. 얇은 껍데기는 여전히 None 만 준다.
         let s = Summarizer::with_caller(
@@ -1116,6 +1215,160 @@ mod tests {
         );
         let o = s.summarize_day_outcome(&standard(), &heavy_signal(), "2026-09-14", "");
         assert_eq!(o.text, None);
+        assert_eq!(o.error.as_deref(), Some("claude CLI 시간 초과(600초)"));
+    }
+
+    /// 정해진 문자열을 map·reduce 자리에 각각 돌려주는 가짜 호출기(실패 없이 '이상한 응답'만).
+    struct Canned {
+        map: String,
+        reduce: String,
+    }
+
+    impl Canned {
+        fn new(map: &str, reduce: &str) -> Box<Self> {
+            Box::new(Self {
+                map: map.to_string(),
+                reduce: reduce.to_string(),
+            })
+        }
+    }
+
+    impl LlmCaller for Canned {
+        fn call(
+            &self,
+            system: &str,
+            _user: &str,
+            _cfg: &SummarizerConfig,
+            _cancel: Option<&AtomicBool>,
+        ) -> Option<String> {
+            Some(if system == CONDENSE_SYSTEM_KO {
+                self.map.clone()
+            } else {
+                self.reduce.clone()
+            })
+        }
+    }
+
+    /// 강제 실패 실험(09-15)에서 실제로 조각 요약 자리에 돌아와 문서에 붙었던 문장.
+    const GREETING: &str = "I'll help you with your work. What would you like me to do?";
+
+    /// V2 TASK E-1 — '비어 있지 않다' 는 성공이 아니다. 인사말·거절·너무 짧은 응답은 요약이 아니다.
+    #[test]
+    fn greetings_and_refusals_are_not_summaries() {
+        for bad in [
+            GREETING,
+            "",
+            "   \n  ",
+            "요약 완료",                                       // 20자 미만
+            "How can I help you today with this project?",     // 인사말
+            "I can't help with that request, sorry about it.", // 거절
+            "죄송합니다. 요청하신 내용은 처리할 수 없습니다.", // 거절(한글)
+            "무엇을 도와드릴까요? 필요한 작업을 알려 주세요.",
+            "Nothing worth reporting for this session today.", // 한글도 불릿도 없음
+        ] {
+            assert!(!plausible_summary(bad), "{bad:?}");
+        }
+        // 대소문자는 가리지 않는다.
+        assert!(!plausible_summary(
+            "I'LL HELP YOU with your work — tell me what you need."
+        ));
+
+        for good in [
+            FAKE_SUMMARY,
+            FAKE_CONDENSED,
+            "- 10:00 수집기 중복 제거 진행 (a1b2c3d)\n- 11:00 회귀 테스트 추가",
+            "### 세션 요약\n버그 원인을 찾아 재발 방지 테스트까지 넣었다.",
+            "* fixed the collector dedup bug and added a regression test", // 한글은 없지만 불릿
+            "1. 수집 경로 정리\n2. 렌더 경고 문구 추가",
+        ] {
+            assert!(plausible_summary(good), "{good:?}");
+        }
+    }
+
+    /// V2 TASK E-1 — 인사말이 온 종합(reduce)은 실패로 적힌다(문서에 붙이지 않는다).
+    #[test]
+    fn greeting_answer_fails_the_day_summary() {
+        assert_eq!(IMPLAUSIBLE_SUMMARY, "요약 응답이 요약이 아님(인사말/거절)");
+
+        // (a) 가벼운 날(단일 호출) — 본문 없이 사유만.
+        let s = Summarizer::with_caller(cfg(1500, 2), Canned::new(FAKE_CONDENSED, GREETING));
+        let o = s.summarize_day_outcome(&standard(), "## Git\n- 커밋", "2026-09-15", "");
+        assert_eq!(o.text, None);
+        assert_eq!(o.error.as_deref(), Some(IMPLAUSIBLE_SUMMARY));
+
+        // (b) 무거운 날 — 세션 압축은 됐으니 부분 요약으로 떨어지고, 인사말은 문서에 없다.
+        let s = Summarizer::with_caller(cfg(1500, 2), Canned::new(FAKE_CONDENSED, GREETING));
+        let o = s.summarize_day_outcome(&standard(), &heavy_signal(), "2026-09-15", "");
+        let text = o.text.expect("부분 요약");
+        assert!(text.starts_with(&format!("> {PARTIAL_HEADING}")));
+        assert!(!text.contains("I'll help you"));
+        assert_eq!(text.matches("세션 압축").count(), 3);
+        assert_eq!(o.error.as_deref(), Some(IMPLAUSIBLE_SUMMARY));
+
+        // (c) 세션 압축까지 인사말이면 성공한 압축이 0 — 부분 요약도 내지 않는다.
+        let s = Summarizer::with_caller(cfg(1500, 2), Canned::new(GREETING, GREETING));
+        let o = s.summarize_day_outcome(&standard(), &heavy_signal(), "2026-09-15", "");
+        assert_eq!(o.text, None);
+        assert_eq!(o.error.as_deref(), Some(IMPLAUSIBLE_SUMMARY));
+    }
+
+    /// 한 세션의 압축만 실패시키는 가짜 호출기 — 종합은 늘 실패(부분 요약 경로).
+    struct MapFailsFor(&'static str);
+
+    impl LlmCaller for MapFailsFor {
+        fn call(
+            &self,
+            system: &str,
+            user: &str,
+            cfg: &SummarizerConfig,
+            cancel: Option<&AtomicBool>,
+        ) -> Option<String> {
+            self.call_detailed(system, user, cfg, cancel).ok()
+        }
+
+        fn call_detailed(
+            &self,
+            system: &str,
+            user: &str,
+            _cfg: &SummarizerConfig,
+            _cancel: Option<&AtomicBool>,
+        ) -> Result<String, String> {
+            if system != CONDENSE_SYSTEM_KO || user.contains(self.0) {
+                return Err("claude CLI 시간 초과(600초)".into());
+            }
+            Ok(FAKE_CONDENSED.into())
+        }
+    }
+
+    /// V2 TASK E-2 — 압축이 실패한 세션은 질답 원문으로 되돌리되 세션당 여덟 줄까지만.
+    #[test]
+    fn failed_map_pastes_at_most_eight_qa_lines() {
+        assert_eq!(VERBATIM_QA_LINES, 8);
+
+        // 순수 함수: 상한 이하면 그대로, 넘으면 여덟 줄 + 생략 한 줄.
+        let few = "- 10:00 Q: 질문 하나 → A: 답 하나\n- 10:05 Q: 질문 둘 → A: 답 둘";
+        assert_eq!(verbatim_fallback(&format!("### [p] s\n{few}")), few);
+        let many = (0..12)
+            .map(|i| format!("- Q{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cut = verbatim_fallback(&format!("### [p] s\n{many}"));
+        assert_eq!(cut.lines().count(), VERBATIM_QA_LINES + 1);
+        assert!(cut.starts_with("- Q0") && cut.contains("- Q7") && !cut.contains("- Q8"));
+        assert!(cut.ends_with("- … 외 4개 질답 생략"));
+
+        // 문서 경로: s2 만 압축 실패 → s1·s3 은 압축본, s2 는 질답 8줄 + 생략 줄.
+        let s = Summarizer::with_caller(cfg(1500, 2), Box::new(MapFailsFor("[p] s2")));
+        let o = s.summarize_day_outcome(&standard(), &heavy_signal(), "2026-09-15", "");
+        let text = o.text.expect("부분 요약");
+        assert_eq!(text.matches("세션 압축").count(), 2);
+        assert!(text.contains("- … 외 20개 질답 생략")); // 세션당 질답 28줄 중 20줄 접힘
+        let s2 = text
+            .split("### [p] s2")
+            .nth(1)
+            .and_then(|t| t.split("### ").next())
+            .expect("s2 구간");
+        assert_eq!(s2.matches("Q:").count(), VERBATIM_QA_LINES);
         assert_eq!(o.error.as_deref(), Some("claude CLI 시간 초과(600초)"));
     }
 
