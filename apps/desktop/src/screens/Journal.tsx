@@ -452,18 +452,12 @@ export default function Journal() {
     }),
   );
 
-  onMount(async () => {
+  onMount(() => {
     const done = lastDone();
     if (done && done.status === "ok") setSinks((m) => new Map(m).set(done.date, done.sinks));
     if (selected() || journalDate()) return;
-    let pick = today();
-    try {
-      const ds = await api.documentDates(1);
-      if (ds[0]) pick = ds[0];
-    } catch (e) {
-      toast(errText(e), "error");
-    }
-    if (!disposed && !selected()) select(pick);
+    // 일지 탭은 항상 오늘로 열린다(사용자 결정). 지난 일지는 달력·검색으로 찾는다.
+    select(today());
   });
 
   // 생성이 끝나면 문서 · 달력 · 검색 목록을 새로 읽는다.
