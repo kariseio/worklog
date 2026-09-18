@@ -11,7 +11,7 @@
 //!        응답: events[].eventComponents[] (summary/start/end/location/attendees ...) + responseMetaData.nextCursor
 //! 목록:  GET {API}/users/{userId}/calendar-personals  (내 캘린더들의 속성)
 
-use std::{fs, time::Duration};
+use std::{collections::HashSet, fs, time::Duration};
 
 use chrono::Utc;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
@@ -161,7 +161,41 @@ fn sort_by_start(events: &mut [CalendarEvent]) {
     });
 }
 
-/// 선택된 캘린더들(없으면 기본 캘린더 1회)을 `fetch` 로 조회해 합치고 정렬한다.
+/// 중복 판정 키: (정규화한 제목, 시작, 종료).
+///
+/// NaverWorks 응답의 이벤트 식별자(eventId)는 `CalendarEvent` 에 보존되지 않으므로
+/// 이 조합을 대신 쓴다. 같은 일정이 여러 캘린더에 걸려 있어도 세 값은 동일하다.
+/// 제목은 앞뒤·중간 공백을 접고 소문자로 바꿔 비교한다.
+fn dedupe_key(e: &CalendarEvent) -> (String, String, String) {
+    let title = e
+        .title
+        .as_deref()
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    (
+        title,
+        e.start.clone().unwrap_or_default(),
+        e.end.clone().unwrap_or_default(),
+    )
+}
+
+/// 같은 일정이 여러 캘린더에 중복으로 들어온 경우 처음 것만 남긴다(회의 건수 과다 집계 방지).
+fn dedupe_events(events: &mut Vec<CalendarEvent>) {
+    let mut seen: HashSet<(String, String, String)> = HashSet::new();
+    events.retain(|e| {
+        let key = dedupe_key(e);
+        // 제목·시작·종료가 모두 비면 식별할 수 없으므로 그대로 둔다.
+        if key.0.is_empty() && key.1.is_empty() && key.2.is_empty() {
+            return true;
+        }
+        seen.insert(key)
+    });
+}
+
+/// 선택된 캘린더들(없으면 기본 캘린더 1회)을 `fetch` 로 조회해 합치고, 중복 제거 후 정렬한다.
 pub(crate) fn merge_calendars<F>(
     ids: &[String],
     mut fetch: F,
@@ -177,6 +211,7 @@ where
             events.extend(fetch(Some(id))?);
         }
     }
+    dedupe_events(&mut events); // 먼저 중복 제거(처음 것 유지) → 정렬은 그대로
     sort_by_start(&mut events);
     Ok(events)
 }
@@ -535,6 +570,76 @@ mod tests {
         })
         .unwrap();
         assert_eq!(calls, vec![None]);
+    }
+
+    /// 같은 일정이 두 캘린더에 걸려 있으면 한 건으로 합치고, 다른 일정은 그대로 둔다.
+    #[test]
+    fn merge_calendars_dedupes_same_event_across_calendars() {
+        let ev = |title: &str, start: &str, end: &str, loc: &str| CalendarEvent {
+            title: Some(title.into()),
+            start: Some(start.into()),
+            end: Some(end.into()),
+            location: Some(loc.into()),
+            ..Default::default()
+        };
+        let evs = merge_calendars(&["a".to_string(), "b".to_string()], |cid| {
+            Ok(match cid {
+                Some("a") => vec![
+                    ev(
+                        "[AI플랫폼개발팀] 주간 보고",
+                        "2026-09-10T13:30:00+09:00",
+                        "2026-09-10T15:00:00+09:00",
+                        "회의실 A",
+                    ),
+                    ev(
+                        "스프린트 회고",
+                        "2026-09-10T16:00:00+09:00",
+                        "2026-09-10T17:00:00+09:00",
+                        "회의실 A",
+                    ),
+                ],
+                _ => vec![
+                    // 같은 일정(제목 공백만 다름) + 제목은 같지만 시간이 다른 별개 일정
+                    ev(
+                        " [AI플랫폼개발팀]  주간 보고 ",
+                        "2026-09-10T13:30:00+09:00",
+                        "2026-09-10T15:00:00+09:00",
+                        "회의실 B",
+                    ),
+                    ev(
+                        "스프린트 회고",
+                        "2026-09-10T18:00:00+09:00",
+                        "2026-09-10T19:00:00+09:00",
+                        "회의실 B",
+                    ),
+                ],
+            })
+        })
+        .unwrap();
+
+        assert_eq!(evs.len(), 3, "중복 1건이 제거되어야 한다");
+        assert_eq!(
+            evs.iter()
+                .map(|e| e.start.clone().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "2026-09-10T13:30:00+09:00",
+                "2026-09-10T16:00:00+09:00",
+                "2026-09-10T18:00:00+09:00",
+            ],
+            "정렬은 시작 시각순 그대로"
+        );
+        // 처음 만난 쪽(캘린더 a)을 유지한다.
+        assert_eq!(evs[0].title.as_deref(), Some("[AI플랫폼개발팀] 주간 보고"));
+        assert_eq!(evs[0].location.as_deref(), Some("회의실 A"));
+        assert_eq!(evs[2].location.as_deref(), Some("회의실 B"));
+
+        // 제목·시작·종료가 모두 빈 이벤트는 식별 불가 → 합치지 않는다.
+        let blanks = merge_calendars(&["a".to_string(), "b".to_string()], |_| {
+            Ok(vec![CalendarEvent::default()])
+        })
+        .unwrap();
+        assert_eq!(blanks.len(), 2);
     }
 
     #[test]
