@@ -126,9 +126,16 @@ pub fn collect(
         let git_h = want_git.then(|| {
             let cwds = claude_cwds.clone();
             s.spawn(move || {
-                GitCollector::new(cfg.sources.git.clone())
-                    .with_extra_repos(cwds)
-                    .collect(ctx)
+                // 저장소 목록을 먼저 한 번만 확정한다(커밋 0 의 이유에 쓸 '저장소 N개').
+                // 그 목록을 그대로 넘기므로 디스크 탐색은 여전히 한 번이다.
+                let collector = GitCollector::new(cfg.sources.git.clone()).with_extra_repos(cwds);
+                let repos: Vec<std::path::PathBuf> = collector
+                    .resolve_repos(&mut Vec::new())
+                    .into_iter()
+                    .map(|r| r.path)
+                    .collect();
+                let scanned = repos.len();
+                (scanned, collector.with_known_repos(repos).collect(ctx))
             })
         });
         let codex_h = want_codex
@@ -139,7 +146,7 @@ pub fn collect(
         (
             git_h.map(|h| {
                 h.join()
-                    .unwrap_or_else(|_| CollectorResult::fail("git", "예외: 수집 스레드 패닉"))
+                    .unwrap_or_else(|_| (0, CollectorResult::fail("git", "예외: 수집 스레드 패닉")))
             }),
             codex_h.map(|h| {
                 h.join()
@@ -153,10 +160,12 @@ pub fn collect(
         )
     });
 
-    if let Some(res) = git_res {
+    if let Some((scanned, res)) = git_res {
         absorb("git", &res, &mut data);
         statuses.insert("git", SourceStatus::from_result(&res, |d| d.commits.len()));
         data.git = res.data;
+        data.git_repos_scanned = scanned;
+        data.git_authors = git_author_count(&cfg.sources.git);
     }
     if let Some(res) = codex_res {
         absorb("codex", &res, &mut data);
@@ -186,6 +195,30 @@ pub fn collect(
         data,
         statuses: statuses.into_values().collect(),
     }
+}
+
+/// 커밋 매칭에 쓰는 '내 작성자' 신원 수 — `커밋 0 — 저장소 N개에서 내 작성자(M개)…` 의 M.
+///
+/// 명시 `author` 가 있으면 그것 하나, 없으면 추가 신원 + 자동 감지 신원(중복 제거).
+/// 저장소마다 다른 `user.email` 까지는 세지 않는 근사값이다.
+pub(crate) fn git_author_count(cfg: &crate::config::GitConfig) -> usize {
+    use crate::collect::git::{detected_identities, identity_pattern};
+    if !cfg.author.trim().is_empty() {
+        return 1;
+    }
+    let mut pats: Vec<String> = cfg
+        .authors
+        .iter()
+        .filter_map(|a| identity_pattern(a))
+        .collect();
+    pats.extend(
+        detected_identities()
+            .iter()
+            .filter_map(|a| identity_pattern(a)),
+    );
+    pats.sort();
+    pats.dedup();
+    pats.len()
 }
 
 // --------------------------------------------------------------------------- //
@@ -930,7 +963,12 @@ mod tests {
                 .full_markdown
                 .starts_with("# 업무일지 2026-07-06 (월)\n")
         );
-        assert!(r.worklog.full_markdown.contains("## 지표\n- 커밋 **0**"));
+        // 수집이 전부 비었으면 0 을 나열하지 않는다(N4).
+        assert!(
+            r.worklog
+                .full_markdown
+                .contains("## 지표\n- 기록된 지표 없음")
+        );
         assert!(r.rendered.signal.is_empty() || r.rendered.signal.starts_with("가용 데이터"));
 
         // 템플릿을 골라 부르면 그 템플릿의 결정론적 부분으로 조합된다.

@@ -179,6 +179,12 @@ pub struct Analysis {
     /// 믿을 수 없음. 렌더러는 이때 집중 표를 숨겨도 된다.
     #[serde(default)]
     pub focus_unreliable: bool,
+    /// 커밋을 찾으려고 훑은 git 저장소 수. 커밋 0인 이유를 쓰는 데만 쓴다(0 이면 모른다는 뜻).
+    #[serde(default)]
+    pub repos_scanned: usize,
+    /// 커밋 매칭에 쓴 '내 작성자' 신원 수. 0 이면 모른다는 뜻.
+    #[serde(default)]
+    pub author_count: usize,
 }
 
 // --------------------------------------------------------------------------- //
@@ -310,6 +316,10 @@ pub fn analyze(data: &DailyData, tz: Tz) -> Analysis {
         .filter(|s| !is_meta_session(s))
         .collect();
 
+    // 커밋 0 의 이유를 쓰려면 '얼마나 훑었는지'가 필요하다(수집기가 채워 준 값 그대로).
+    a.repos_scanned = data.git_repos_scanned;
+    a.author_count = data.git_authors;
+
     // --- KPI ---
     a.kpis.commits = commits.len() as u32;
     a.kpis.insertions = commits.iter().map(|c| c.insertions as u64).sum();
@@ -421,14 +431,8 @@ pub fn analyze(data: &DailyData, tz: Tz) -> Analysis {
     let mut events: Vec<TimelineEvent> = Vec::new();
     for s in &sessions {
         let Some(first) = s.first_ts else { continue };
-        let title = s
-            .title
-            .as_deref()
-            .or(s.intent.as_deref())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if title.is_empty() {
+        // 제목 원본이 아예 없는 세션은 타임라인에도 올리지 않는다(쓸 말이 없다).
+        if !crate::render::has_title_source(s) {
             continue;
         }
         events.push(TimelineEvent {
@@ -436,7 +440,8 @@ pub fn analyze(data: &DailyData, tz: Tz) -> Analysis {
             start: hm(&first, tz),
             end: s.last_ts.map(|l| hm(&l, tz)),
             project: s.project.clone().unwrap_or_else(|| "?".into()),
-            label: take_chars(&title, 70),
+            // 시스템 주입 문구·Traceback·로컬 경로가 타임라인으로 새지 않게 한 통로로 정제(N2).
+            label: crate::render::session_title(s),
             ctype: None,
         });
     }

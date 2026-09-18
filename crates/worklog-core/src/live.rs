@@ -519,6 +519,9 @@ impl Live {
                 .collect();
             commits.sort_by_key(|c| c.when);
             data.git = Some(GitData { commits });
+            // 커밋 0 의 이유(저장소 N개 · 작성자 M개)를 지표 줄이 쓸 수 있게 넘긴다.
+            data.git_repos_scanned = self.git.len();
+            data.git_authors = service::git_author_count(&self.cfg.sources.git);
         }
         data.calendar = self.calendar.clone();
         // 같은 세션이 worktree·이어받기로 여러 파일에 걸쳐 있으면 먼저 하나로 합친다.

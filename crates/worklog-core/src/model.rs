@@ -154,17 +154,12 @@ impl Session {
         format!("{agent}:cwd:{cwd}@{minute}")
     }
 
-    /// 표시용 제목: ai-title → 첫 프롬프트(60자) → "(제목 없음)".
+    /// 표시용 제목: ai-title → 첫 프롬프트 → 첫 발화 → 편집 파일명 → `[프로젝트] 세션`.
+    ///
+    /// 정제는 [`crate::render::clean_title`] 한 곳에서만 한다 — 시스템 주입 문구·Traceback·
+    /// 로컬 절대경로가 피드·문서 어디로도 새지 않게(N2).
     pub fn display_title(&self) -> String {
-        let t = self.title.as_deref().map(str::trim).unwrap_or("");
-        if !t.is_empty() {
-            return t.to_string();
-        }
-        let i = self.intent.as_deref().map(str::trim).unwrap_or("");
-        if !i.is_empty() {
-            return i.chars().take(60).collect();
-        }
-        "(제목 없음)".to_string()
+        crate::render::session_title(self)
     }
 }
 
@@ -248,6 +243,12 @@ pub struct DailyData {
     /// 그날 메모(시간순). 자동 수집이 아니라 사용자가 직접 남긴 1차 사실.
     #[serde(default)]
     pub notes: Vec<NoteItem>,
+    /// 커밋을 찾으려고 훑은 git 저장소 수(수집기가 채운다). 커밋 0 의 이유를 쓰는 데 쓴다.
+    #[serde(default)]
+    pub git_repos_scanned: usize,
+    /// 커밋 매칭에 쓴 '내 작성자' 신원 수.
+    #[serde(default)]
+    pub git_authors: usize,
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -262,6 +263,8 @@ impl DailyData {
             codex: None,
             calendar: None,
             notes: Vec::new(),
+            git_repos_scanned: 0,
+            git_authors: 0,
             warnings: Vec::new(),
         }
     }
@@ -383,11 +386,20 @@ mod tests {
     #[test]
     fn display_title_fallbacks() {
         let mut s = Session::default();
-        assert_eq!(s.display_title(), "(제목 없음)");
+        assert_eq!(s.display_title(), "세션");
+        s.project = Some("repoA".into());
+        assert_eq!(s.display_title(), "[repoA] 세션");
+        // 제목·요청이 없으면 편집 파일명이 다음 후보
+        s.files_edited = vec!["D:/repoA/auth.rs".into(), "D:/repoA/main.rs".into()];
+        assert_eq!(s.display_title(), "auth.rs, main.rs");
         s.intent = Some("아주 긴 요청 ".repeat(20));
-        assert_eq!(s.display_title().chars().count(), 60);
+        let long = s.display_title();
+        assert!(long.chars().count() <= 60 && long.ends_with('…'));
         s.title = Some(" 제목 ".into());
         assert_eq!(s.display_title(), "제목");
+        // 시스템 주입 문구는 제목 자리에 오지 않는다(N2) — 다음 후보로 내려간다.
+        s.title = Some("<recommended_plugins>".into());
+        assert!(s.display_title().starts_with("아주 긴 요청"));
     }
 
     #[test]

@@ -8,7 +8,10 @@
 //!
 //! 문자열 하나하나가 v1(Python) 출력과 동일해야 골든 비교가 통과한다.
 
+use std::sync::LazyLock;
+
 use chrono_tz::Tz;
+use regex::Regex;
 
 use crate::{
     analyze::Analysis,
@@ -74,12 +77,170 @@ fn non_meta(sessions: &[Session]) -> Vec<&Session> {
 }
 
 fn session_head(s: &Session) -> String {
-    s.title
-        .as_deref()
-        .filter(|t| !t.is_empty())
-        .or(s.intent.as_deref().filter(|i| !i.is_empty()))
-        .unwrap_or("(제목 없음)")
-        .to_string()
+    session_title(s)
+}
+
+// --------------------------------------------------------------------------- //
+// 세션 제목 정제 (N2)
+// --------------------------------------------------------------------------- //
+//
+// 세션 제목 자리에는 원문이 그대로 들어온다 — 시스템 주입 문구(`<recommended_plugins>`),
+// 붙여넣은 Traceback, `Read D:\...\render.rs` 같은 도구 호출, 로컬 절대경로. 문서로 나가면
+// 안 되는 것들이라 제목을 쓰는 모든 자리가 [`clean_title`] 한 곳을 지나간다.
+
+/// 제목 최대 길이(자). 넘으면 마지막 자리를 '…' 로 바꾼다.
+const TITLE_MAX_CHARS: usize = 60;
+
+/// 폴백 제목에 넣을 편집 파일명 최대 개수.
+const TITLE_MAX_FILES: usize = 3;
+
+/// 이 문구가 들어 있으면 사람이 쓴 제목이 아니다(도구 출력·주입 문구).
+const TITLE_BLOCK_CONTAINS: [&str; 5] = [
+    "The following is the Codex agent history",
+    "Traceback (most recent call last)",
+    "Call the MCP tool",
+    "Do the following with MCP tools",
+    // 도구 이름 자체(`mcp__서버__툴`). 위 두 문장은 표현이 조금만 달라져도 빠져나가지만
+    // (`Call these MCP tools in order …`), 실제 도구 지시문에는 이 토큰이 거의 늘 붙는다.
+    // 사람이 쓴 말에는 나오지 않으므로 오탐이 없다 — "MCP 기능을 지원할 수 있어?" 는 그대로 통과.
+    "mcp__",
+];
+
+/// 제목 안에 박힌 로컬 절대경로 토큰. 앞에 경계(문자열 시작·공백·따옴표·괄호)가 있어야 하고,
+/// 중간 폴더명에는 공백이 들어갈 수 있다(`D:\study\Daily Work Log\...`). 마지막 조각은 파일명.
+static ABS_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?P<pre>^|[\s"'(\[])(?P<path>(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|/)(?:[^\\/\s:][^\\/:]*[\\/])*[^\\/\s:][^\\/\s:]*)"#,
+    )
+    .expect("regex")
+});
+
+/// 문자열 전체가 경로 하나인지(제목이 아니라 그냥 경로).
+static PATH_ONLY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(?:[A-Za-z]:[\\/]|\\\\|~[\\/]|/|\./|\.\./)(?:[^\\/\s:][^\\/:]*[\\/])*[^\\/\s:][^\\/\s:]*$",
+    )
+    .expect("regex")
+});
+
+/// 문자열 전체가 URL 하나인지.
+static URL_ONLY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?i:https?|file|ftp)://\S+$|^(?i:www\.)\S+$").expect("regex"));
+
+/// 경로처럼 보이는 토큰인지(`Read <경로>` 판정용).
+fn looks_like_path_token(t: &str) -> bool {
+    t.contains('/') || t.contains('\\') || PATH_ONLY_RE.is_match(t)
+}
+
+/// 글자(letter)가 공백 아닌 글자의 절반도 안 되면 제목으로 못 쓴다 — 기호·로그 덩어리.
+fn mostly_non_letters(t: &str) -> bool {
+    let solid = t.chars().filter(|c| !c.is_whitespace()).count();
+    if solid == 0 {
+        return true;
+    }
+    t.chars().filter(|c| c.is_alphabetic()).count() * 2 < solid
+}
+
+/// 차단 패턴에 걸리는 후보인지. 공백이 이미 접힌 문자열을 받는다.
+fn is_blocked_title(t: &str) -> bool {
+    if t.chars().count() < 2 {
+        return true;
+    }
+    if t.starts_with('<') {
+        return true; // <recommended_plugins> · <system-reminder> · <command-…>
+    }
+    if TITLE_BLOCK_CONTAINS.iter().any(|p| t.contains(p)) {
+        return true;
+    }
+    if let Some(rest) = t.strip_prefix("Read ")
+        && looks_like_path_token(rest.split_whitespace().next().unwrap_or(""))
+    {
+        return true;
+    }
+    if t.starts_with("Called the ") {
+        return true;
+    }
+    if PATH_ONLY_RE.is_match(t) || URL_ONLY_RE.is_match(t) {
+        return true;
+    }
+    mostly_non_letters(t)
+}
+
+/// 제목 안의 로컬 절대경로를 파일명으로 줄인다(`D:\study\p\render.rs` → `render.rs`).
+fn shorten_paths(t: &str) -> String {
+    ABS_PATH_RE
+        .replace_all(t, |c: &regex::Captures| {
+            format!("{}{}", &c["pre"], base_name(&c["path"]))
+        })
+        .into_owned()
+}
+
+/// 60자에서 자르고 '…' 를 붙인다.
+fn cut_title(t: &str) -> String {
+    if t.chars().count() <= TITLE_MAX_CHARS {
+        return t.to_string();
+    }
+    let head: String = t.chars().take(TITLE_MAX_CHARS - 1).collect();
+    format!("{}…", head.trim_end())
+}
+
+/// 후보를 앞에서부터 보며 문서에 내보내도 되는 첫 제목을 고른다.
+///
+/// 후보 순서는 부르는 쪽이 정한다 — 보통 `ai-title → 첫 요청 → 첫 사용자 발화 → 편집 파일명`.
+/// 전부 막히면 `[프로젝트] 세션`, 프로젝트도 없으면 `세션`.
+pub fn clean_title(candidates: &[&str], project: Option<&str>) -> String {
+    for cand in candidates {
+        let squashed = squash_ws(cand);
+        if squashed.is_empty() || is_blocked_title(&squashed) {
+            continue;
+        }
+        let shortened = squash_ws(&shorten_paths(&squashed));
+        if shortened.chars().count() < 2 || mostly_non_letters(&shortened) {
+            continue;
+        }
+        return cut_title(&shortened);
+    }
+    match project.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => format!("[{p}] 세션"),
+        None => "세션".to_string(),
+    }
+}
+
+/// 편집 파일명(최대 3개)을 마지막 제목 후보로.
+fn files_title_candidate(files: &[String]) -> String {
+    files
+        .iter()
+        .take(TITLE_MAX_FILES)
+        .map(|p| base_name(p))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// 제목으로 쓸 만한 원본이 하나라도 있는지. 없으면 그 세션은 제목 자리에 내보내지 않는다.
+pub fn has_title_source(s: &Session) -> bool {
+    !s.title.as_deref().unwrap_or("").trim().is_empty()
+        || !s.intent.as_deref().unwrap_or("").trim().is_empty()
+        || s.qa.iter().any(|t| !t.question.trim().is_empty())
+        || !s.files_edited.is_empty()
+}
+
+/// 세션 하나의 표시용 제목 — 제목을 내보내는 모든 자리의 단일 통로.
+pub fn session_title(s: &Session) -> String {
+    let files = files_title_candidate(&s.files_edited);
+    let first_q =
+        s.qa.iter()
+            .map(|t| t.question.as_str())
+            .find(|q| !q.trim().is_empty())
+            .unwrap_or("");
+    clean_title(
+        &[
+            s.title.as_deref().unwrap_or(""),
+            s.intent.as_deref().unwrap_or(""),
+            first_q,
+            files.as_str(),
+        ],
+        s.project.as_deref(),
+    )
 }
 
 // --------------------------------------------------------------------------- //
@@ -304,9 +465,13 @@ fn tok(n: u64) -> String {
     }
 }
 
+/// 지표가 하나도 남지 않았을 때(전부 0) 쓰는 줄.
+pub const METRICS_EMPTY: &str = "- 기록된 지표 없음";
+
 /// 하루 지표 한 줄. 문서의 `## 지표` 섹션 본문이자 옛 `render_analysis` 의 첫 줄.
 ///
-/// 회의·메모 건수는 [`Analysis::kpis`] 에서 그대로 가져온다(0 이면 표기 자체를 생략).
+/// **0 인 항목은 쓰지 않는다**(원칙 3 — 0 은 0인 이유와 함께만). 예외는 커밋 하나 —
+/// 저장소를 훑었는데 커밋이 0이면 그 이유를 적는다(설정 문제를 사흘이 아니라 3초에 발견).
 /// `tz` 는 시그니처 호환용 — 시각은 이미 `Analysis` 안에서 현지 시간 문자열로 굳어 있다.
 pub fn render_metrics_line(a: &Analysis, _tz: Tz) -> String {
     metrics_line(a)
@@ -314,35 +479,62 @@ pub fn render_metrics_line(a: &Analysis, _tz: Tz) -> String {
 
 fn metrics_line(a: &Analysis) -> String {
     let k = &a.kpis;
-    let span = match (&k.span_start, &k.span_end) {
-        (Some(s), Some(e)) => format!(" · 활동 {s}–{e}"),
-        _ => String::new(),
-    };
-    let mtg = if k.meetings > 0 {
-        format!(" · 회의 {}건", k.meetings)
-    } else {
-        String::new()
-    };
-    let notes = if k.notes > 0 {
-        format!(" · 메모 {}건", k.notes)
-    } else {
-        String::new()
-    };
-    format!(
-        "- 커밋 **{}** (+{}/−{}) · 저장소 {} · AI **{}세션** · 출력 {}{mtg}{notes}{span}",
-        k.commits,
-        fmt_thousands(k.insertions),
-        fmt_thousands(k.deletions),
-        k.repos,
-        k.sessions,
-        tok(k.tokens)
-    )
+    let mut items: Vec<String> = Vec::new();
+    if k.commits > 0 {
+        items.push(format!(
+            "커밋 **{}** (+{}/−{})",
+            k.commits,
+            fmt_thousands(k.insertions),
+            fmt_thousands(k.deletions)
+        ));
+    } else if a.repos_scanned > 0 && a.author_count > 0 {
+        // 저장소 수·작성자 수를 모르면(0) 이 줄 자체를 쓰지 않는다 — 근거 없는 0은 뺀다.
+        items.push(format!(
+            "커밋 0 — 훑은 저장소 {}개에서 내 작성자({}개)와 일치하는 커밋 없음",
+            a.repos_scanned, a.author_count
+        ));
+    }
+    if k.repos > 0 {
+        items.push(format!("저장소 {}", k.repos));
+    }
+    if k.sessions > 0 {
+        items.push(format!("AI **{}세션**", k.sessions));
+    }
+    if k.tokens > 0 {
+        items.push(format!("출력 {}", tok(k.tokens)));
+    }
+    if k.meetings > 0 {
+        items.push(format!("회의 {}건", k.meetings));
+    }
+    if k.notes > 0 {
+        items.push(format!("메모 {}건", k.notes));
+    }
+    if let (Some(s), Some(e)) = (&k.span_start, &k.span_end) {
+        items.push(format!("활동 {s}–{e}"));
+    }
+    if items.is_empty() {
+        return METRICS_EMPTY.to_string();
+    }
+    format!("- {}", items.join(" · "))
 }
 
+/// 집중시간을 믿을 수 없을 때 표 대신 나가는 한 줄(원칙 3 — 틀린 숫자보다 없는 숫자가 낫다).
+pub const FOCUS_UNRELIABLE_NOTICE: &str =
+    "집중시간을 신뢰할 수 없어 표를 생략했습니다(세션 구간 합계가 하루를 넘음)";
+
+/// 표 아래 작게 붙는 계산 기준 한 줄.
+pub const FOCUS_NOTE: &str = "_집중시간은 겹치는 세션을 합쳐 벽시계 기준으로 계산_";
+
 /// 프로젝트별 집중 표(머리글 줄 없이). 프로젝트가 없으면 빈 문자열.
+///
+/// [`Analysis::focus_unreliable`] 이면 표 대신 [`FOCUS_UNRELIABLE_NOTICE`] 한 줄만,
+/// 추정이 섞인 행([`crate::analyze::ProjectRollup::estimated`])은 시간 뒤에 `(추정)` 을 붙인다.
 pub fn render_focus_table(a: &Analysis) -> String {
     if a.projects.is_empty() {
         return String::new();
+    }
+    if a.focus_unreliable {
+        return FOCUS_UNRELIABLE_NOTICE.to_string();
     }
     let mut lines: Vec<String> = vec![
         "| 프로젝트 | 집중시간 | 세션 | 파일 | 커밋 | 변경 |".into(),
@@ -350,7 +542,12 @@ pub fn render_focus_table(a: &Analysis) -> String {
     ];
     for p in &a.projects {
         let dur = if p.minutes > 0 {
-            human_duration(p.minutes * 60)
+            let d = human_duration(p.minutes * 60);
+            if p.estimated {
+                format!("{d} (추정)")
+            } else {
+                d
+            }
         } else {
             "–".into()
         };
@@ -368,7 +565,7 @@ pub fn render_focus_table(a: &Analysis) -> String {
             p.project, p.sessions, p.files, p.commits
         ));
     }
-    lines.join("\n")
+    format!("{}\n\n{FOCUS_NOTE}", lines.join("\n"))
 }
 
 /// 타임라인 불릿 목록(머리글 줄 없이). 이벤트가 없으면 빈 문자열.
@@ -496,27 +693,10 @@ fn emit_session_titles(lines: &mut Vec<String>, heading: &str, sessions: &[Sessi
     let mut seen: Vec<(String, String)> = Vec::new();
     let mut by_proj: Vec<(String, Vec<(String, usize)>)> = Vec::new();
     for s in sessions {
-        if is_meta_session(s) {
+        if is_meta_session(s) || !has_title_source(s) {
             continue;
         }
-        let title = s
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                s.intent
-                    .as_deref()
-                    .unwrap_or("")
-                    .trim()
-                    .chars()
-                    .take(60)
-                    .collect()
-            });
-        if title.is_empty() {
-            continue;
-        }
+        let title = session_title(s);
         let proj = s.project.clone().unwrap_or_else(|| "?".into());
         let key = (proj.clone(), title.clone());
         if seen.contains(&key) {
@@ -639,27 +819,8 @@ pub fn render_session_blocks(data: &DailyData, tz: Tz, max_files: usize) -> Vec<
             ""
         };
         // 제목/의도는 원본 사용자 텍스트라 개행을 품을 수 있다. 구조선(### 헤더, 요청)에 그대로 넣으면
-        // map-reduce 파서의 블록 구분자 "\n\n### " 를 주입해 오분할되므로 접는다.
-        let title = s
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                s.intent
-                    .as_deref()
-                    .unwrap_or("")
-                    .trim()
-                    .chars()
-                    .take(60)
-                    .collect()
-            });
-        let title = if title.is_empty() {
-            "(제목 없음)".to_string()
-        } else {
-            squash_ws(&title)
-        };
+        // map-reduce 파서의 블록 구분자 "\n\n### " 를 주입해 오분할되므로 `clean_title` 이 접는다.
+        let title = session_title(s);
         let span = match (s.first_ts, s.last_ts) {
             (Some(f), Some(l)) => format!(" {}–{}", fmt_time(Some(&f), tz), fmt_time(Some(&l), tz)),
             _ => String::new(),
@@ -721,7 +882,7 @@ pub fn render_session_section(blocks: &[(String, String)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyze::analyze;
+    use crate::analyze::{Kpis, ProjectRollup, analyze};
     use crate::model::{CalendarData, CalendarEvent, GitCommit, GitData, QaTurn, SessionData};
     use crate::time::get_tz;
     use crate::time::parse_iso;
@@ -995,15 +1156,30 @@ mod tests {
         // 질답 없고 intent 만 있으면 '요청' 줄
         let s2 = Session {
             project: Some("p".into()),
-            title: Some("t".into()),
+            title: Some("제목".into()),
             intent: Some("해줘  줄바꿈\n포함".into()),
             ..Default::default()
         };
         let mut d2 = DailyData::new(d.target_date, "Asia/Seoul");
-        d2.claude = Some(SessionData { sessions: vec![s2] });
+        d2.claude = Some(SessionData {
+            sessions: vec![s2.clone()],
+        });
         assert_eq!(
             render_session_blocks(&d2, tz, 8)[0].1,
-            "### [p] t\n- 요청: 해줘 줄바꿈 포함"
+            "### [p] 제목\n- 요청: 해줘 줄바꿈 포함"
+        );
+
+        // 한 글자짜리 제목은 후보에서 빠지고 다음 후보(요청)로 내려간다(N2).
+        let s3 = Session {
+            title: Some("t".into()),
+            ..s2
+        };
+        let mut d3 = DailyData::new(d.target_date, "Asia/Seoul");
+        d3.claude = Some(SessionData { sessions: vec![s3] });
+        assert!(
+            render_session_blocks(&d3, tz, 8)[0]
+                .1
+                .starts_with("### [p] 해줘 줄바꿈 포함\n")
         );
     }
 
@@ -1015,7 +1191,9 @@ mod tests {
         assert!(md.contains("## 📊 오늘 지표\n- 커밋 **2** (+403/−3) · 저장소 1 · AI **1세션** · 출력 5K토큰 · 활동 09:00–12:00"));
         assert!(md.contains("- 커밋 타입: 기능 1 · 버그 1"));
         assert!(md.contains("- 작업 성격: **구현형** (Edit 10 · Read 2)"));
-        assert!(md.contains("### 프로젝트별 집중\n| 프로젝트 | 집중시간 | 세션 | 파일 | 커밋 | 변경 |\n|---|--:|--:|--:|--:|--:|\n| repoA | 1h 30m | 1 | 2 | 2 | +403/−3 |"));
+        // 활동 시각을 모르는 세션이라 '(추정)' 이 붙고, 표 아래에 계산 기준 한 줄이 따라온다.
+        assert!(md.contains("### 프로젝트별 집중\n| 프로젝트 | 집중시간 | 세션 | 파일 | 커밋 | 변경 |\n|---|--:|--:|--:|--:|--:|\n| repoA | 1h 30m (추정) | 1 | 2 | 2 | +403/−3 |"));
+        assert!(md.contains(FOCUS_NOTE));
         assert!(md.contains("## 🕐 타임라인\n- `09:00–10:30` 🤖 기능 구현 · repoA\n- `10:00` 💾 [기능] feat: 큰 기능 · repoA\n- `12:00` 💾 [버그] fix: 작은 버그 · repoA"));
 
         let mut d = crate::analyze::tests::sample();
@@ -1056,7 +1234,8 @@ mod tests {
         assert_eq!(a.timeline[0].kind, "note");
         assert_eq!(a.timeline[0].start, "10:35");
         let md = render_analysis(&a);
-        assert!(md.contains("· 메모 1건"));
+        // 0 인 항목(커밋·저장소·세션·토큰)은 빠지고 메모만 남는다(N4).
+        assert!(md.contains("## 📊 오늘 지표\n- 메모 1건\n"));
         assert!(md.contains("## 🕐 타임라인\n- `10:35` 📝 김팀장 구두 요청 — 결제 API 타임아웃\n3초→10초 [#요청 @김팀장]"));
         let txt = render_timeline_for_llm(&a);
         assert!(txt.contains("- 10:35 [메모] 김팀장 구두 요청"));
@@ -1080,7 +1259,7 @@ mod tests {
         let table = render_focus_table(&a);
         assert_eq!(
             table,
-            "| 프로젝트 | 집중시간 | 세션 | 파일 | 커밋 | 변경 |\n|---|--:|--:|--:|--:|--:|\n| repoA | 1h 30m | 1 | 2 | 2 | +403/−3 |"
+            "| 프로젝트 | 집중시간 | 세션 | 파일 | 커밋 | 변경 |\n|---|--:|--:|--:|--:|--:|\n| repoA | 1h 30m (추정) | 1 | 2 | 2 | +403/−3 |\n\n_집중시간은 겹치는 세션을 합쳐 벽시계 기준으로 계산_"
         );
         let tl = render_timeline_list(&a, tz);
         assert!(tl.starts_with("- `09:00–10:30` 🤖 기능 구현 · repoA\n"));
@@ -1092,12 +1271,301 @@ mod tests {
         assert!(md.contains(&line) && md.contains(&table) && md.contains(&tl));
 
         let empty = Analysis::default();
-        assert_eq!(
-            render_metrics_line(&empty, tz),
-            "- 커밋 **0** (+0/−0) · 저장소 0 · AI **0세션** · 출력 0토큰"
-        );
+        assert_eq!(render_metrics_line(&empty, tz), METRICS_EMPTY);
         assert!(render_focus_table(&empty).is_empty());
         assert!(render_timeline_list(&empty, tz).is_empty());
+    }
+
+    // ----------------------------------------------------------------- //
+    // N2 — 세션 제목 정제
+    // ----------------------------------------------------------------- //
+
+    /// 사람이 쓴 제목은 손대지 않는다(경로 축약·공백 접기만).
+    #[test]
+    fn clean_title_passes_real_titles_through() {
+        let pass = [
+            "로그인 버그 수정",
+            "feat: 결제 API 타임아웃 3초→10초",
+            "render 함수에서 정제된 요약 신호 렌더링 고쳐줘",
+            "N1 세션 정규화 적용",
+            "worklog-core 테스트 수정",
+            "MCP 인증 방향 확정(OAuth+PAT 2갈래)",
+            "Fix flaky test in collect/git.rs",
+            "빌드 실패 원인 추적 — cargo clippy 경고 0개로",
+            "Update README",
+            "세션 제목 정제 설계 검토",
+            "Obsidian 저장 시 덮어쓰기 확인 로직",
+            "주간 보고 CLI 초안",
+        ];
+        for t in pass {
+            assert_eq!(clean_title(&[t], Some("repoA")), t, "{t}");
+        }
+        // 공백·개행은 접고, 로컬 절대경로는 파일명만 남긴다.
+        assert_eq!(clean_title(&["여러   줄\n제목"], None), "여러 줄 제목");
+        assert_eq!(
+            clean_title(
+                &["D:\\study\\Daily Work Log\\crates\\worklog-core\\src\\render.rs 수정"],
+                None
+            ),
+            "render.rs 수정"
+        );
+        assert_eq!(
+            clean_title(
+                &["설정 파일 C:/Users/owner/.claude/settings.json 확인"],
+                None
+            ),
+            "설정 파일 settings.json 확인"
+        );
+        assert_eq!(
+            clean_title(&["/home/me/notes.md 를 참고해서 정리"], None),
+            "notes.md 를 참고해서 정리"
+        );
+        // 60자에서 자르고 '…' 를 붙인다.
+        let long = clean_title(&["가".repeat(80).as_str()], None);
+        assert_eq!(long.chars().count(), 60);
+        assert!(long.ends_with('…'));
+    }
+
+    /// 차단 패턴은 전부 다음 후보로 넘어간다.
+    #[test]
+    fn clean_title_blocks_injected_and_tool_text() {
+        let blocked = [
+            "<recommended_plugins>\n- foo",                         // 시스템 주입
+            "<system-reminder> 사용자에게 알리지 마세요",           // 시스템 주입
+            "<command-name>/clear</command-name>",                  // 시스템 주입
+            "The following is the Codex agent history for the",     // 에이전트 히스토리
+            "Traceback (most recent call last): File \"a.py\"",     // 붙여넣은 로그
+            "Call the MCP tool `search_docs` with query",           // 도구 지시문
+            "Do the following with MCP tools: 1) 검색",             // 도구 지시문
+            "Call these MCP tools in order: 1. mcp__suda__list",    // 도구 지시문(다른 표현)
+            "1. mcp__suda-local__get_workflow with {\"id\":\"a\"}", // 도구 이름만 있어도
+            "Read D:\\study\\Daily Work Log\\crates\\x\\render.rs", // Read <경로>
+            "Read crates/worklog-core/src/render.rs",               // Read <상대경로>
+            "Called the Bash tool with the following input",        // 도구 호출 로그
+            "D:\\study\\repo\\src\\main.rs",                        // 경로만
+            "/home/me/notes.md",                                    // 경로만
+            "~/.claude/projects/x.jsonl",                           // 경로만
+            "https://example.com/a/b",                              // URL 만
+            "x",                                                    // 2자 미만
+            "+++ --- >>> ***",                                      // 글자가 거의 없음
+        ];
+        for t in blocked {
+            assert_eq!(
+                clean_title(&[t, "정상 제목"], Some("repoA")),
+                "정상 제목",
+                "{t}"
+            );
+            // 뒤 후보가 없으면 프로젝트 폴백으로 내려간다(원문은 절대 나가지 않는다).
+            assert_eq!(clean_title(&[t], Some("repoA")), "[repoA] 세션", "{t}");
+        }
+    }
+
+    /// 모두 막히면 편집 파일명 → `[프로젝트] 세션` → `세션` 순으로 내려간다.
+    #[test]
+    fn clean_title_fallbacks_and_session_title_candidate_order() {
+        assert_eq!(clean_title(&[], None), "세션");
+        assert_eq!(clean_title(&["", "  "], None), "세션");
+        assert_eq!(clean_title(&["<x>"], Some(" repoA ")), "[repoA] 세션");
+
+        // 제목 → 요청 → 첫 발화 → 편집 파일명
+        let base = Session {
+            project: Some("repoA".into()),
+            files_edited: vec![
+                "D:/repoA/auth.rs".into(),
+                "D:/repoA/main.rs".into(),
+                "D:/repoA/lib.rs".into(),
+                "D:/repoA/never.rs".into(),
+            ],
+            qa: vec![QaTurn {
+                time: "10:00".into(),
+                question: "첫 사용자 발화".into(),
+                answer: "a".into(),
+            }],
+            intent: Some("첫 요청 문장".into()),
+            title: Some("세션 제목".into()),
+            ..Default::default()
+        };
+        assert_eq!(session_title(&base), "세션 제목");
+        let s = Session {
+            title: Some("<recommended_plugins>".into()),
+            ..base.clone()
+        };
+        assert_eq!(session_title(&s), "첫 요청 문장");
+        let s = Session {
+            intent: Some("Traceback (most recent call last)".into()),
+            ..s
+        };
+        assert_eq!(session_title(&s), "첫 사용자 발화");
+        let s = Session {
+            qa: vec![QaTurn {
+                time: "10:00".into(),
+                question: "<system-reminder> 무시".into(),
+                answer: "a".into(),
+            }],
+            ..s
+        };
+        assert_eq!(session_title(&s), "auth.rs, main.rs, lib.rs"); // 최대 3개
+        let s = Session {
+            files_edited: Vec::new(),
+            ..s
+        };
+        assert_eq!(session_title(&s), "[repoA] 세션");
+        assert_eq!(session_title(&Session { project: None, ..s }), "세션");
+
+        // 제목 원본이 하나도 없으면 제목 자리에 올리지 않는다.
+        assert!(!has_title_source(&Session::default()));
+        assert!(has_title_source(&base));
+    }
+
+    /// 제목을 내보내는 모든 자리가 같은 통로를 지난다.
+    #[test]
+    fn every_title_site_is_cleaned() {
+        let tz = get_tz("Asia/Seoul");
+        let dirty = "<recommended_plugins>\n- plugin-a";
+        let s = Session {
+            session_id: Some("s1".into()),
+            project: Some("repoA".into()),
+            title: Some(dirty.into()),
+            intent: Some("Read D:\\study\\repo\\src\\main.rs".into()),
+            files_edited: vec!["D:/repoA/auth.rs".into()],
+            first_ts: parse_iso("2026-07-08T01:00:00Z"),
+            last_ts: parse_iso("2026-07-08T02:00:00Z"),
+            ..Default::default()
+        };
+        let mut d = DailyData::new(NaiveDate::from_ymd_opt(2026, 7, 8).unwrap(), "Asia/Seoul");
+        d.claude = Some(SessionData {
+            sessions: vec![s.clone()],
+        });
+
+        let a = analyze(&d, tz);
+        // 제목이 나가는 다섯 자리 — 전부 폴백(편집 파일명)으로 바뀌어 있다.
+        let title_lines = [
+            render_facts(&d, tz)
+                .lines()
+                .find(|l| l.starts_with("- **repoA**"))
+                .unwrap()
+                .to_string(), // session_head
+            render_work_signal(&d, tz, "")
+                .lines()
+                .find(|l| l.starts_with("- **repoA**"))
+                .unwrap()
+                .to_string(), // emit_session_titles
+            render_session_blocks(&d, tz, 8)[0]
+                .1
+                .lines()
+                .next()
+                .unwrap()
+                .to_string(), // 질답 블록 헤더
+            render_timeline_list(&a, tz), // 타임라인(analyze 라벨)
+            format!("- **repoA**: {}", s.display_title()), // 피드 라벨(model)
+        ];
+        for text in title_lines {
+            assert!(!text.contains("recommended_plugins"), "{text}");
+            assert!(!text.contains("D:\\study"), "{text}");
+            assert!(text.contains("auth.rs"), "{text}");
+        }
+        assert_eq!(a.timeline[0].label, "auth.rs");
+    }
+
+    // ----------------------------------------------------------------- //
+    // N4 — 0 숨김 + 이유 · 집중 표 플래그
+    // ----------------------------------------------------------------- //
+
+    #[test]
+    fn metrics_line_hides_zeros_and_explains_zero_commits() {
+        let tz = get_tz("Asia/Seoul");
+        // 아무것도 없으면 0 을 나열하는 대신 한 마디.
+        assert_eq!(render_metrics_line(&Analysis::default(), tz), METRICS_EMPTY);
+
+        // 저장소를 훑었는데 커밋이 0 → 이유를 적는다(저장소 N개 · 작성자 M개).
+        let with_reason = Analysis {
+            repos_scanned: 41,
+            author_count: 2,
+            kpis: Kpis {
+                sessions: 3,
+                tokens: 303_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            render_metrics_line(&with_reason, tz),
+            "- 커밋 0 — 훑은 저장소 41개에서 내 작성자(2개)와 일치하는 커밋 없음 · AI **3세션** · 출력 303K토큰"
+        );
+
+        // 저장소 수나 작성자 수를 모르면(0) 커밋 항목 자체를 뺀다.
+        let unknown_repos = Analysis {
+            repos_scanned: 0,
+            ..with_reason.clone()
+        };
+        assert_eq!(
+            render_metrics_line(&unknown_repos, tz),
+            "- AI **3세션** · 출력 303K토큰"
+        );
+        let unknown_authors = Analysis {
+            author_count: 0,
+            ..with_reason
+        };
+        assert_eq!(
+            render_metrics_line(&unknown_authors, tz),
+            "- AI **3세션** · 출력 303K토큰"
+        );
+
+        // 0 인 항목만 빠지고 나머지 서식은 그대로.
+        let partial = Analysis {
+            kpis: Kpis {
+                commits: 2,
+                insertions: 403,
+                deletions: 3,
+                repos: 1,
+                notes: 1,
+                span_start: Some("09:00".into()),
+                span_end: Some("12:00".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            render_metrics_line(&partial, tz),
+            "- 커밋 **2** (+403/−3) · 저장소 1 · 메모 1건 · 활동 09:00–12:00"
+        );
+    }
+
+    #[test]
+    fn focus_table_marks_estimated_and_hides_unreliable() {
+        let proj = |name: &str, minutes: i64, estimated: bool| ProjectRollup {
+            project: name.into(),
+            minutes,
+            sessions: 1,
+            files: 2,
+            estimated,
+            ..Default::default()
+        };
+        let a = Analysis {
+            projects: vec![proj("repoA", 90, true), proj("repoB", 45, false)],
+            ..Default::default()
+        };
+        let table = render_focus_table(&a);
+        assert!(table.contains("| repoA | 1h 30m (추정) | 1 | 2 | 0 | – |"));
+        assert!(table.contains("| repoB | 45m | 1 | 2 | 0 | – |"));
+        assert!(table.ends_with(&format!("\n\n{FOCUS_NOTE}")));
+
+        // 시간이 0이면 '(추정)' 도 붙일 값이 없다.
+        let zero = Analysis {
+            projects: vec![proj("repoC", 0, true)],
+            ..Default::default()
+        };
+        assert!(render_focus_table(&zero).contains("| repoC | – | 1 | 2 | 0 | – |"));
+
+        // 믿을 수 없으면 표 대신 한 줄(원칙 3).
+        let bad = Analysis {
+            focus_unreliable: true,
+            ..a
+        };
+        assert_eq!(render_focus_table(&bad), FOCUS_UNRELIABLE_NOTICE);
+        assert!(!render_focus_table(&bad).contains('|'));
+        // 프로젝트가 아예 없으면 예나 지금이나 빈 문자열.
+        assert!(render_focus_table(&Analysis::default()).is_empty());
     }
 
     #[test]

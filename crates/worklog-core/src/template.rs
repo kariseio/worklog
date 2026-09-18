@@ -558,10 +558,9 @@ mod tests {
             true,
         );
         assert!(md.contains("> LLM 요약을 사용하지 않았습니다. 아래 지표를 참고하세요."));
-        // 데이터가 없어도 지표 한 줄은 늘 남는다.
-        assert!(
-            md.contains("## 지표\n- 커밋 **0** (+0/−0) · 저장소 0 · AI **0세션** · 출력 0토큰\n")
-        );
+        // 데이터가 없어도 지표 한 줄은 늘 남는다 — 다만 0 을 나열하지는 않는다(N4).
+        assert!(md.contains("## 지표\n- 기록된 지표 없음\n"));
+        assert!(!md.contains("커밋 **0**"));
         assert!(!md.contains("프로젝트별 집중") && !md.contains("<summary>타임라인"));
         assert!(md.contains(
             "---\n\n<details>\n<summary>수집 데이터 원본</summary>\n\n# 원본 사실 데이터\n- 커밋 목록\n\n</details>\n"
