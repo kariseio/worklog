@@ -410,6 +410,19 @@ impl Summarizer {
         self.call(system, &user_prompt(date_iso, signal, availability))
     }
 
+    /// system · user 를 가공 없이 한 번만 호출한다.
+    ///
+    /// [`summarize_with`](Self::summarize_with) 은 입력을 '하루치 신호' 프롬프트로 감싸므로
+    /// 하루가 아닌 입력(주간 중복 병합 — `docs/product-plan.md` N8)에는 이쪽을 쓴다.
+    pub fn summarize_raw(&self, system: &str, user: &str) -> Option<String> {
+        if self.provider() == Provider::None {
+            tracing::info!("요약기: 사용 안 함 (합쳐 놓은 초안 그대로)");
+            return None;
+        }
+        self.report("요약", "병합");
+        self.call(system, user)
+    }
+
     /// 표준 템플릿으로 하루 업무일지 생성. [`summarize_day_with`](Self::summarize_day_with) 의 얇은 껍데기.
     pub fn summarize_day(
         &self,

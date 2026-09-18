@@ -25,6 +25,7 @@ pub mod summarize;
 pub mod template;
 pub mod time;
 pub mod watch;
+pub mod weekly;
 
 /// 크레이트 버전 (Cargo.toml `workspace.package.version`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

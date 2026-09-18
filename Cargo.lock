@@ -7803,6 +7803,7 @@ name = "worklog-cli"
 version = "0.2.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "tracing",
  "tracing-subscriber",

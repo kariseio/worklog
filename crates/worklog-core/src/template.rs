@@ -13,17 +13,29 @@ use serde::Serialize;
 use crate::{
     analyze::Analysis,
     render::{render_focus_table, render_metrics_line, render_timeline_list},
+    weekly::{NONE_LINE, RangeKpis, find_metrics, fmt_md},
 };
 
 pub const DEFAULT_TEMPLATE: &str = "standard";
 pub const TEMPLATE_IDS: [&str; 3] = ["standard", "report", "retro"];
 
+/// 주간 모아보기(N8) 전용 id. **[`TEMPLATE_IDS`] 에 넣지 않는다** — 하루 문서 템플릿이 아니고,
+/// `documents` 에 저장되지도 않는다(`worklog weekly` 의 출력 전용).
+pub const WEEKLY_TEMPLATE: &str = "weekly";
+
+/// `--template weekly` 인지. 앞뒤 공백·대소문자는 눈감아 준다.
+pub fn is_weekly(id: &str) -> bool {
+    id.trim().eq_ignore_ascii_case(WEEKLY_TEMPLATE)
+}
+
 // --------------------------------------------------------------------------- //
 // 섹션 제목 · 지시문
 // --------------------------------------------------------------------------- //
 
-const T_WINS: &str = "오늘의 성과";
-const T_DECISIONS: &str = "결정 · 요청 · 할 일";
+/// 모든 템플릿 공통 — 주간 모아보기([`crate::weekly`])가 이 둘만 모은다.
+pub const T_WINS: &str = "오늘의 성과";
+/// 모든 템플릿 공통 — 주간 모아보기([`crate::weekly`])가 이 둘만 모은다.
+pub const T_DECISIONS: &str = "결정 · 요청 · 할 일";
 const T_PROJECTS: &str = "프로젝트별 진행";
 const T_FLOW: &str = "시간대별 흐름";
 const T_LEARNED: &str = "막힌 것 · 배운 것";
@@ -274,6 +286,160 @@ pub fn compose(
 }
 
 // --------------------------------------------------------------------------- //
+// 주간 모아보기 (N8)
+// --------------------------------------------------------------------------- //
+
+/// 주간 문서의 섹션 제목.
+const T_W_WINS: &str = "이번 주 성과";
+const T_W_DECISIONS: &str = "결정 · 요청";
+const T_W_TODO: &str = "남은 할 일";
+const T_W_METRICS: &str = "지표 (주간 합계)";
+
+/// 주간 중복 병합 LLM 호출의 system 프롬프트.
+///
+/// 이 호출이 하는 일은 **중복 줄 합치기 하나뿐**이다 — 새 사실을 쓰게 하지 않는다.
+/// (이 호출이 만드는 claude 세션은 [`crate::render::WORKLOG_SENTINEL`] 로 걸러진다.)
+pub fn weekly_system_prompt() -> String {
+    WEEKLY_SYSTEM.to_string()
+}
+
+const WEEKLY_SYSTEM: &str = concat!(
+    "너는 여러 날의 업무일지에서 뽑아 놓은 '이번 주 성과' 초안을 다듬는 도구다. ",
+    "하는 일은 단 하나 — 같은 일을 가리키는 중복 줄을 하나로 합치는 것.\n\n",
+    "규칙:\n",
+    "1. 새로운 사실을 만들지 마라. 입력에 없는 내용·숫자·이름·프로젝트를 추가하지 마라. ",
+    "합치는 것 말고는 아무것도 하지 않는다.\n",
+    "2. 날짜 앵커 `(9/16)` 와 근거 괄호 `(a1b2c3d)`·`(auth.py)` 를 지우지 마라. ",
+    "여러 날을 합쳤으면 날짜를 모두 남긴다 — `… (9/15, 9/16)`.\n",
+    "3. `**프로젝트**` 굵은 줄과 그 아래 불릿 구조를 그대로 유지한다. ",
+    "프로젝트를 새로 만들거나 줄을 다른 프로젝트로 옮기지 마라.\n",
+    "4. 서로 다른 일이면 합치지 마라. 애매하면 그대로 둔다 — 줄을 잃는 것보다 중복이 낫다.\n",
+    "5. 한 프로젝트 안에서는 최신 날짜가 위로.\n",
+    "6. 제목(#)·머리말·맺음말·설명을 쓰지 마라. 본문(굵은 프로젝트 줄 + 불릿)만 출력한다."
+);
+
+/// [`compose_weekly`] 입력 — 결정론적으로 합쳐 둔 조각들([`crate::weekly::merge`] 결과).
+#[derive(Debug, Clone, Copy)]
+pub struct WeeklyParts<'a> {
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+    /// `**프로젝트**` + 불릿. LLM 병합본이거나 [`crate::weekly::render_wins`] 결과.
+    pub wins_md: &'a str,
+    /// `9/16 결정: …`(앞에 `- ` 를 붙여 낸다).
+    pub decisions: &'a [String],
+    /// `- [ ] … (9/16 ~)` — 이미 불릿 표기가 붙어 있다.
+    pub remaining: &'a [String],
+    /// 체크됐거나 뒷날 완료된 할 일 수.
+    pub done: usize,
+    pub kpis: &'a RangeKpis,
+    /// 문서가 없어 빠진 평일.
+    pub missing: &'a [NaiveDate],
+    /// 섹션을 찾지 못해 원문을 붙일 날 — (날짜, 원문). 원문에 지표 줄이 살아 있으면
+    /// `kpis` 에 이미 합산돼 있고, 경고 문구도 그렇게 적는다([`compose_weekly`]).
+    pub parse_failures: &'a [(NaiveDate, String)],
+    /// 사용자가 편집한 날(편집본이 정본).
+    pub edited: &'a [NaiveDate],
+    /// LLM 병합을 실제로 썼는가.
+    pub llm_used: bool,
+}
+
+/// 주간 문서 한 장. 저장하지 않는다 — stdout 또는 `--out` 파일로만 나간다.
+pub fn compose_weekly(p: &WeeklyParts<'_>) -> String {
+    let to_short = if p.from.year() == p.to.year() {
+        p.to.format("%m-%d").to_string()
+    } else {
+        p.to.to_string()
+    };
+    let mut lines: Vec<String> = vec![
+        format!("# 주간 업무일지 {} ~ {to_short}", p.from),
+        String::new(),
+    ];
+
+    lines.push(format!("## {T_W_WINS}"));
+    let wins = p.wins_md.trim();
+    lines.push(if wins.is_empty() {
+        NONE_LINE.to_string()
+    } else {
+        wins.to_string()
+    });
+    lines.push(String::new());
+
+    lines.push(format!("## {T_W_DECISIONS}"));
+    if p.decisions.is_empty() {
+        lines.push(NONE_LINE.to_string());
+    } else {
+        lines.extend(p.decisions.iter().map(|d| format!("- {d}")));
+    }
+    lines.push(String::new());
+
+    lines.push(format!("## {T_W_TODO} ({})", p.remaining.len()));
+    if p.remaining.is_empty() {
+        lines.push(NONE_LINE.to_string());
+    } else {
+        lines.extend(p.remaining.iter().cloned());
+    }
+    if p.done > 0 {
+        lines.push(String::new());
+        lines.push(format!("_이번 주 완료 {}건_", p.done));
+    }
+    lines.push(String::new());
+
+    lines.push(format!("## {T_W_METRICS}"));
+    lines.push(p.kpis.line());
+
+    // 빠진 날·파싱 실패는 침묵하지 않는다(원칙 5).
+    let mut warnings: Vec<String> = p
+        .missing
+        .iter()
+        .map(|d| {
+            format!(
+                "⚠ {} ({}) 일지가 없어 빠졌습니다",
+                fmt_md(*d),
+                weekday_ko(*d)
+            )
+        })
+        .collect();
+    warnings.extend(p.parse_failures.iter().map(|(d, raw)| {
+        // 섹션이 깨졌어도 지표 줄은 살아 있을 수 있다 — 합산했는지를 그대로 말한다(원칙 5).
+        let metrics = if find_metrics(raw).is_some() {
+            "지표는 합산"
+        } else {
+            "지표 합계에서도 빠짐"
+        };
+        format!(
+            "⚠ {} — 섹션을 찾지 못해 원문 그대로 포함({metrics})",
+            fmt_md(*d)
+        )
+    }));
+    if !warnings.is_empty() {
+        lines.push(String::new());
+        lines.extend(warnings);
+    }
+
+    let mut notes: Vec<String> = Vec::new();
+    if !p.edited.is_empty() {
+        let days: Vec<String> = p.edited.iter().map(|d| fmt_md(*d)).collect();
+        notes.push(format!("_({} 편집본 기준)_", days.join(" · ")));
+    }
+    if !p.llm_used {
+        notes.push("_중복 병합(LLM)을 쓰지 않아 날짜별 줄을 그대로 합쳤습니다._".to_string());
+    }
+    if !notes.is_empty() {
+        lines.push(String::new());
+        lines.extend(notes);
+    }
+
+    for (d, raw) in p.parse_failures {
+        lines.push(String::new());
+        lines.push(format!("### {} 원문", fmt_md(*d)));
+        lines.push(String::new());
+        lines.push(raw.trim().to_string());
+    }
+
+    format!("{}\n", lines.join("\n").trim_end())
+}
+
+// --------------------------------------------------------------------------- //
 // 내부
 // --------------------------------------------------------------------------- //
 
@@ -345,6 +511,170 @@ mod tests {
 
     fn sample_analysis() -> Analysis {
         analyze(&crate::analyze::tests::sample(), get_tz("Asia/Seoul"))
+    }
+
+    // ---- 주간 모아보기(N8) ------------------------------------------------ //
+
+    fn ymd(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    #[test]
+    fn weekly_id_is_not_a_daily_template() {
+        assert!(!TEMPLATE_IDS.contains(&WEEKLY_TEMPLATE));
+        assert!(all().iter().all(|t| t.id != WEEKLY_TEMPLATE));
+        // 일별 템플릿으로는 여전히 모르는 id — 표준으로 떨어진다(TEMPLATE_IDS 불변).
+        assert_eq!(resolve(WEEKLY_TEMPLATE), DEFAULT_TEMPLATE);
+        assert!(is_weekly(" Weekly ") && is_weekly("weekly"));
+        assert!(!is_weekly("report") && !is_weekly(""));
+    }
+
+    #[test]
+    fn weekly_prompt_only_merges_and_forbids_new_facts() {
+        let p = weekly_system_prompt();
+        assert!(p.starts_with("너는 여러 날의 업무일지"));
+        assert!(p.contains("같은 일을 가리키는 중복 줄을 하나로 합치는 것"));
+        assert!(p.contains("새로운 사실을 만들지 마라"));
+        assert!(p.contains("`(9/16)`")); // 날짜 앵커 보존
+        assert!(p.contains("`**프로젝트**` 굵은 줄")); // 프로젝트 묶음 보존
+        assert!(p.contains("애매하면 그대로 둔다"));
+        assert!(p.contains("제목(#)·머리말·맺음말·설명을 쓰지 마라"));
+        // 하루 템플릿 프롬프트와 섞이지 않는다.
+        for id in TEMPLATE_IDS {
+            assert_ne!(p, system_prompt(id));
+        }
+    }
+
+    #[test]
+    fn compose_weekly_has_wins_decisions_todo_metrics_then_warnings() {
+        let k = RangeKpis {
+            commits: 24,
+            repos: 6,
+            sessions: 68,
+            meetings: 9,
+        };
+        let md = compose_weekly(&WeeklyParts {
+            from: ymd(2026, 9, 14),
+            to: ymd(2026, 9, 18),
+            wins_md: "**alpha**\n- MCP 인증 방향 확정 (a1b2c3d) (9/16)",
+            decisions: &["9/16 결정: 색인 상태 기준으로 전환".to_string()],
+            remaining: &["- [ ] 재시도 루프 수정 (9/16 ~)".to_string()],
+            done: 2,
+            kpis: &k,
+            missing: &[ymd(2026, 9, 17)],
+            parse_failures: &[(ymd(2026, 9, 16), "종일 회의.".to_string())],
+            edited: &[ymd(2026, 9, 16)],
+            llm_used: true,
+        });
+        assert_eq!(
+            md,
+            "# 주간 업무일지 2026-09-14 ~ 09-18\n\
+             \n\
+             ## 이번 주 성과\n\
+             **alpha**\n\
+             - MCP 인증 방향 확정 (a1b2c3d) (9/16)\n\
+             \n\
+             ## 결정 · 요청\n\
+             - 9/16 결정: 색인 상태 기준으로 전환\n\
+             \n\
+             ## 남은 할 일 (1)\n\
+             - [ ] 재시도 루프 수정 (9/16 ~)\n\
+             \n\
+             _이번 주 완료 2건_\n\
+             \n\
+             ## 지표 (주간 합계)\n\
+             - 커밋 24 · 저장소 6 · AI 68세션 · 회의 9건\n\
+             \n\
+             ⚠ 9/17 (목) 일지가 없어 빠졌습니다\n\
+             ⚠ 9/16 — 섹션을 찾지 못해 원문 그대로 포함(지표 합계에서도 빠짐)\n\
+             \n\
+             _(9/16 편집본 기준)_\n\
+             \n\
+             ### 9/16 원문\n\
+             \n\
+             종일 회의.\n"
+        );
+    }
+
+    #[test]
+    fn parse_failure_warning_says_whether_metrics_were_counted() {
+        // 지표 줄이 살아 있는 원문(v1 제목) — 합계에 들어갔다고 말한다.
+        let k = RangeKpis {
+            commits: 5,
+            ..Default::default()
+        };
+        let counted = compose_weekly(&WeeklyParts {
+            from: ymd(2026, 9, 14),
+            to: ymd(2026, 9, 18),
+            wins_md: "",
+            decisions: &[],
+            remaining: &[],
+            done: 0,
+            kpis: &k,
+            missing: &[],
+            parse_failures: &[(
+                ymd(2026, 9, 16),
+                "## 오늘 한 일\n- 손으로 적음\n\n## 📊 오늘 지표\n- 커밋 5".to_string(),
+            )],
+            edited: &[],
+            llm_used: false,
+        });
+        assert!(counted.contains("⚠ 9/16 — 섹션을 찾지 못해 원문 그대로 포함(지표는 합산)"));
+        assert!(!counted.contains("빠짐"));
+        assert!(counted.contains("## 지표 (주간 합계)\n- 커밋 5\n"));
+
+        // 지표 줄까지 없는 원문 — 합계에서도 빠졌다고 말한다.
+        let empty = RangeKpis::default();
+        let dropped = compose_weekly(&WeeklyParts {
+            from: ymd(2026, 9, 14),
+            to: ymd(2026, 9, 18),
+            wins_md: "",
+            decisions: &[],
+            remaining: &[],
+            done: 0,
+            kpis: &empty,
+            missing: &[],
+            parse_failures: &[(ymd(2026, 9, 16), "종일 회의.".to_string())],
+            edited: &[],
+            llm_used: false,
+        });
+        assert!(
+            dropped.contains("⚠ 9/16 — 섹션을 찾지 못해 원문 그대로 포함(지표 합계에서도 빠짐)")
+        );
+        assert!(!dropped.contains("지표는 합산"));
+    }
+
+    #[test]
+    fn compose_weekly_empty_week_and_year_boundary() {
+        let k = RangeKpis::default();
+        let empty = WeeklyParts {
+            from: ymd(2026, 9, 14),
+            to: ymd(2026, 9, 18),
+            wins_md: "",
+            decisions: &[],
+            remaining: &[],
+            done: 0,
+            kpis: &k,
+            missing: &[],
+            parse_failures: &[],
+            edited: &[],
+            llm_used: false,
+        };
+        let md = compose_weekly(&empty);
+        assert!(md.contains("## 이번 주 성과\n- (없음)\n"));
+        assert!(md.contains("## 결정 · 요청\n- (없음)\n"));
+        assert!(md.contains("## 남은 할 일 (0)\n- (없음)\n"));
+        assert!(md.contains("## 지표 (주간 합계)\n- 기록된 지표 없음\n"));
+        assert!(md.ends_with("_중복 병합(LLM)을 쓰지 않아 날짜별 줄을 그대로 합쳤습니다._\n"));
+        assert!(!md.contains("완료 0건") && !md.contains("⚠") && !md.contains("편집본"));
+
+        // 해가 바뀌면 끝 날짜도 온전히 쓴다.
+        let md = compose_weekly(&WeeklyParts {
+            from: ymd(2025, 12, 29),
+            to: ymd(2026, 1, 2),
+            ..empty
+        });
+        assert!(md.starts_with("# 주간 업무일지 2025-12-29 ~ 2026-01-02\n"));
     }
 
     #[test]

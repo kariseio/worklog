@@ -5,7 +5,7 @@
 
 use std::{borrow::Cow, collections::HashMap, path::Path};
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use chrono_tz::Tz;
 use indexmap::IndexMap;
 use serde_json::{Value, json};
@@ -32,6 +32,7 @@ use crate::{
     summarize::Summarizer,
     template,
     time::{TimeError, fmt_time, get_tz, parse_iso_in, resolve_day},
+    weekly::{self, RangeKpis},
 };
 
 pub const ALL_SOURCES: [&str; 4] = SOURCE_NAMES;
@@ -733,6 +734,139 @@ pub fn generate_with(
 }
 
 // --------------------------------------------------------------------------- //
+// 주간 모아보기 (N8) — 읽기만 한다
+// --------------------------------------------------------------------------- //
+
+#[derive(Debug, thiserror::Error)]
+pub enum RangeError {
+    #[error("기간이 거꾸로입니다: {from} ~ {to}")]
+    BadRange { from: NaiveDate, to: NaiveDate },
+    #[error("문서를 읽지 못했습니다: {0}")]
+    Store(#[from] crate::store::StoreError),
+}
+
+/// [`generate_range`] 결과. `markdown` 외 나머지는 로그·테스트·호출자 표시용.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RangeDocument {
+    /// 완성된 주간 문서. **저장하지 않는다** — stdout 또는 `--out` 파일로만.
+    pub markdown: String,
+    /// 문서가 있어 실제로 합쳐진 날.
+    pub days_included: Vec<NaiveDate>,
+    /// 문서가 없어 경고로 남은 **평일**(주말은 조용히 건너뛴다).
+    pub days_missing: Vec<NaiveDate>,
+    /// 섹션을 찾지 못해 원문을 그대로 붙인 날.
+    pub parse_failures: Vec<NaiveDate>,
+    pub kpis: RangeKpis,
+    /// 중복 병합 LLM 호출을 실제로 썼는가.
+    pub llm_used: bool,
+}
+
+fn is_weekday(d: NaiveDate) -> bool {
+    d.weekday().num_days_from_monday() < 5
+}
+
+/// `[from, to]` 구간의 **이미 만들어진** 일별 문서를 파싱해 주간 문서 한 장으로 합친다.
+///
+/// `documents` 를 읽기만 한다 — 어떤 저장소·싱크에도 쓰지 않고 스키마도 그대로다(N8).
+/// `summarizer` 가 `Some` 이면 중복 병합에만 LLM 을 **1회** 호출하고, 실패하거나 형식을 벗어나면
+/// 결정론적 병합본을 그대로 쓴다.
+pub fn generate_range(
+    cfg: &Config,
+    store: &Store,
+    from: NaiveDate,
+    to: NaiveDate,
+    template_id: &str,
+    summarizer: Option<&Summarizer>,
+) -> Result<RangeDocument, RangeError> {
+    if to < from {
+        return Err(RangeError::BadRange { from, to });
+    }
+    if !template::is_weekly(template_id) {
+        tracing::warn!(
+            "기간 문서 템플릿은 '{}' 하나뿐입니다 — {template_id:?} 대신 이걸로 만듭니다.",
+            template::WEEKLY_TEMPLATE
+        );
+    }
+    tracing::info!("주간 모아보기 {from} ~ {to} ({})", cfg.timezone);
+
+    let statuses = store.document_statuses(from, to)?;
+    let mut days: Vec<weekly::DayDoc> = Vec::with_capacity(statuses.len());
+    for st in &statuses {
+        let Some(doc) = store.document_get(st.date)? else {
+            continue;
+        };
+        days.push(weekly::parse_day(
+            st.date,
+            &doc.full_md,
+            st.edited || doc.is_edited(),
+        ));
+    }
+
+    let included: Vec<NaiveDate> = days.iter().map(|d| d.date).collect();
+    let missing: Vec<NaiveDate> = from
+        .iter_days()
+        .take_while(|d| *d <= to)
+        .filter(|d| is_weekday(*d) && !included.contains(d))
+        .collect();
+    let failures: Vec<(NaiveDate, String)> = days
+        .iter()
+        .filter(|d| d.parse_failed)
+        .map(|d| (d.date, d.raw.clone()))
+        .collect();
+    let edited: Vec<NaiveDate> = days.iter().filter(|d| d.edited).map(|d| d.date).collect();
+    // M7 — 주간 파싱 실패율(§7-1). 첫 실행부터 측정한다.
+    tracing::info!("{}일 중 {}일 섹션 파싱 실패", days.len(), failures.len());
+
+    let merged = weekly::merge(&days);
+    let mut kpis = RangeKpis::default();
+    for d in &days {
+        kpis.add(&d.kpis);
+    }
+
+    let draft = weekly::render_wins(&merged.wins);
+    let (wins_md, llm_used) = match summarizer {
+        Some(s) if !draft.trim().is_empty() => {
+            let out = s.summarize_raw(
+                &template::weekly_system_prompt(),
+                &weekly::merge_user_prompt(from, to, &draft),
+            );
+            match out {
+                Some(m) if weekly::looks_like_wins(&m) => (m.trim().to_string(), true),
+                Some(_) => {
+                    tracing::warn!("주간 병합 응답이 형식을 벗어나 합쳐 둔 초안을 그대로 씁니다.");
+                    (draft, false)
+                }
+                None => (draft, false),
+            }
+        }
+        _ => (draft, false),
+    };
+
+    let markdown = template::compose_weekly(&template::WeeklyParts {
+        from,
+        to,
+        wins_md: &wins_md,
+        decisions: &merged.decisions,
+        remaining: &merged.remaining,
+        done: merged.done,
+        kpis: &kpis,
+        missing: &missing,
+        parse_failures: &failures,
+        edited: &edited,
+        llm_used,
+    });
+
+    Ok(RangeDocument {
+        markdown,
+        days_included: included,
+        days_missing: missing,
+        parse_failures: failures.into_iter().map(|(d, _)| d).collect(),
+        kpis,
+        llm_used,
+    })
+}
+
+// --------------------------------------------------------------------------- //
 // 저장
 // --------------------------------------------------------------------------- //
 
@@ -880,6 +1014,196 @@ mod tests {
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    // ---- 주간 모아보기(N8) ------------------------------------------------ //
+
+    fn day_doc(date: NaiveDate, body: &str) -> crate::store::Document {
+        crate::store::Document {
+            date,
+            summary_md: None,
+            full_md: body.to_string(),
+            generated_at: Utc::now(),
+            edited_at: None,
+            run_id: None,
+            template: Some("standard".into()),
+        }
+    }
+
+    /// 9/14(월)·9/15(화)·9/16(수) 문서 3장 + 9/17(목) 미생성.
+    fn week_store() -> Store {
+        let s = Store::open_in_memory().unwrap();
+        s.document_put(&day_doc(
+            d(2026, 9, 14),
+            "# 업무일지 2026-09-14 (월)\n\n\
+             ## 오늘의 성과\n- [alpha] 설계 초안 정리 (a1b2c3d)\n\n\
+             ## 결정 · 요청 · 할 일\n- 결정: 인증은 OAuth\n- [ ] 타임아웃 10초로 조정\n\n\
+             ## 지표\n- 커밋 **3** (+10/−2) · 저장소 1 · AI **2세션** · 회의 1건\n",
+        ))
+        .unwrap();
+        s.document_put(&day_doc(
+            d(2026, 9, 15),
+            "# 업무일지 2026-09-15 (화)\n\n\
+             ## 📌 오늘의 성과\n- [alpha] 설계 확정 (e4f5a6b)\n- 위키 정리\n\n\
+             ## 결정 · 요청 · 할 일\n- [x] 타임아웃 10초로 조정 (e4f5a6b)\n- [ ] 리뷰 반영\n\n\
+             ## 지표\n- 커밋 0 — 훑은 저장소 4개에서 내 작성자(1개)와 일치하는 커밋 없음 · AI **1세션**\n",
+        ))
+        .unwrap();
+        // 사람이 손으로 갈아엎어 섹션이 사라진 문서.
+        let broken = "# 업무일지 2026-09-16 (수)\n\n종일 회의. 나중에 정리.\n";
+        s.document_put(&day_doc(d(2026, 9, 16), broken)).unwrap();
+        s.document_mark_edited(d(2026, 9, 16), broken, None)
+            .unwrap();
+        s
+    }
+
+    #[test]
+    fn generate_range_merges_days_and_never_writes() {
+        let s = week_store();
+        let cfg = Config::default();
+        let (from, to) = (d(2026, 9, 14), d(2026, 9, 17));
+        let r = generate_range(&cfg, &s, from, to, template::WEEKLY_TEMPLATE, None).unwrap();
+
+        assert_eq!(
+            r.days_included,
+            vec![d(2026, 9, 14), d(2026, 9, 15), d(2026, 9, 16)]
+        );
+        assert_eq!(r.days_missing, vec![d(2026, 9, 17)]); // 목요일 — 침묵하지 않는다
+        assert_eq!(r.parse_failures, vec![d(2026, 9, 16)]);
+        assert!(!r.llm_used);
+        assert_eq!(
+            r.kpis,
+            crate::weekly::RangeKpis {
+                commits: 3,
+                repos: 1,
+                sessions: 3,
+                meetings: 1
+            }
+        );
+
+        let md = &r.markdown;
+        assert!(md.starts_with("# 주간 업무일지 2026-09-14 ~ 09-17\n"));
+        assert!(md.contains(
+            "## 이번 주 성과\n**alpha**\n- 설계 확정 (e4f5a6b) (9/15)\n- 설계 초안 정리 (a1b2c3d) (9/14)"
+        ));
+        assert!(md.contains("**기타**\n- 위키 정리 (9/15)"));
+        assert!(md.contains("## 결정 · 요청\n- 9/14 결정: 인증은 OAuth"));
+        // 9/14 에 열렸다가 9/15 에 체크된 할 일은 빠지고, 9/15 것만 남는다.
+        assert!(md.contains("## 남은 할 일 (1)\n- [ ] 리뷰 반영 (9/15 ~)"));
+        assert!(md.contains("_이번 주 완료 1건_"));
+        assert!(md.contains("## 지표 (주간 합계)\n- 커밋 3 · 저장소 1 · AI 3세션 · 회의 1건"));
+        assert!(md.contains("⚠ 9/17 (목) 일지가 없어 빠졌습니다"));
+        assert!(md.contains("⚠ 9/16 — 섹션을 찾지 못해 원문 그대로 포함"));
+        assert!(md.contains("_(9/16 편집본 기준)_"));
+        assert!(md.contains("_중복 병합(LLM)을 쓰지 않아"));
+        assert!(md.contains("### 9/16 원문\n\n종일 회의. 나중에 정리."));
+
+        // 저장소에는 아무것도 쓰지 않았다 — 문서 3장 그대로, 스키마 그대로.
+        assert_eq!(s.document_statuses(from, to).unwrap().len(), 3);
+        assert_eq!(s.schema_version().unwrap(), crate::store::SCHEMA_VERSION);
+        assert_eq!(crate::store::SCHEMA_VERSION, 3);
+    }
+
+    #[test]
+    fn generate_range_weekend_gaps_are_silent_and_bad_range_errors() {
+        let s = Store::open_in_memory().unwrap();
+        let cfg = Config::default();
+        // 9/19(토)·9/20(일)만 비어 있는 구간 — 경고하지 않는다.
+        let r = generate_range(
+            &cfg,
+            &s,
+            d(2026, 9, 19),
+            d(2026, 9, 20),
+            template::WEEKLY_TEMPLATE,
+            None,
+        )
+        .unwrap();
+        assert!(r.days_missing.is_empty() && r.days_included.is_empty());
+        assert!(!r.markdown.contains("⚠"));
+        assert!(r.markdown.contains("## 이번 주 성과\n- (없음)"));
+        assert!(r.markdown.contains("## 남은 할 일 (0)"));
+        assert!(r.markdown.contains("- 기록된 지표 없음"));
+
+        assert!(matches!(
+            generate_range(
+                &cfg,
+                &s,
+                d(2026, 9, 18),
+                d(2026, 9, 14),
+                template::WEEKLY_TEMPLATE,
+                None
+            ),
+            Err(RangeError::BadRange { .. })
+        ));
+    }
+
+    #[test]
+    fn generate_range_uses_one_llm_call_and_falls_back_on_bad_output() {
+        use crate::config::SummarizerConfig;
+        use crate::summarize::LlmCaller;
+        use std::sync::Mutex;
+
+        struct Once(Mutex<Vec<String>>, &'static str);
+        impl LlmCaller for Once {
+            fn call(
+                &self,
+                system: &str,
+                _user: &str,
+                _cfg: &SummarizerConfig,
+                _cancel: Option<&std::sync::atomic::AtomicBool>,
+            ) -> Option<String> {
+                self.0.lock().unwrap().push(system.to_string());
+                Some(self.1.to_string())
+            }
+        }
+        let cfg = Config::default();
+        let scfg = SummarizerConfig {
+            provider: "claude_cli".into(),
+            ..Default::default()
+        };
+        let s = week_store();
+
+        // (1) 형식을 지킨 응답 → 그대로 쓴다. 호출은 정확히 1회.
+        let fake = Box::new(Once(
+            Mutex::new(vec![]),
+            "**alpha**\n- 설계 초안 정리·확정 (a1b2c3d) (9/14, 9/15)",
+        ));
+        let ptr: *const Once = &*fake;
+        let sum = Summarizer::with_caller(scfg.clone(), fake);
+        let r = generate_range(
+            &cfg,
+            &s,
+            d(2026, 9, 14),
+            d(2026, 9, 16),
+            template::WEEKLY_TEMPLATE,
+            Some(&sum),
+        )
+        .unwrap();
+        assert!(r.llm_used);
+        assert!(
+            r.markdown
+                .contains("- 설계 초안 정리·확정 (a1b2c3d) (9/14, 9/15)")
+        );
+        assert!(!r.markdown.contains("_중복 병합(LLM)을 쓰지 않아"));
+        // SAFETY: caller 는 Summarizer 가 살아있는 동안 유효.
+        let calls = unsafe { &*ptr }.0.lock().unwrap().clone();
+        assert_eq!(calls, vec![template::weekly_system_prompt()]);
+
+        // (2) 앵커가 사라진 응답 → 합쳐 둔 초안으로 되돌린다(지어낸 문서로 바꾸지 않는다).
+        let sum =
+            Summarizer::with_caller(scfg, Box::new(Once(Mutex::new(vec![]), "다 합쳤습니다.")));
+        let r = generate_range(
+            &cfg,
+            &s,
+            d(2026, 9, 14),
+            d(2026, 9, 16),
+            template::WEEKLY_TEMPLATE,
+            Some(&sum),
+        )
+        .unwrap();
+        assert!(!r.llm_used);
+        assert!(r.markdown.contains("- 설계 확정 (e4f5a6b) (9/15)"));
+        assert!(!r.markdown.contains("다 합쳤습니다."));
     }
 
     #[test]
