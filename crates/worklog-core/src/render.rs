@@ -11,6 +11,7 @@
 use std::sync::LazyLock;
 
 use chrono_tz::Tz;
+use indexmap::IndexMap;
 use regex::Regex;
 
 use crate::{
@@ -104,6 +105,11 @@ const TRIVIAL_COMMANDS: [&str; 14] = [
     "which", "where",
 ];
 
+/// MCP 도구 이름 접두사(`mcp__서버__툴`). 원문에 이 토큰이 보이면 제목으로 못 쓰지만
+/// ([`TITLE_BLOCK_CONTAINS`]), `tool_counts` 의 키로는 서버·도구 이름을 읽어 쓴다
+/// ([`mcp_title_candidate`]).
+const MCP_TOOL_PREFIX: &str = "mcp__";
+
 /// 이 문구가 들어 있으면 사람이 쓴 제목이 아니다(도구 출력·주입 문구).
 const TITLE_BLOCK_CONTAINS: [&str; 5] = [
     "The following is the Codex agent history",
@@ -113,7 +119,7 @@ const TITLE_BLOCK_CONTAINS: [&str; 5] = [
     // 도구 이름 자체(`mcp__서버__툴`). 위 두 문장은 표현이 조금만 달라져도 빠져나가지만
     // (`Call these MCP tools in order …`), 실제 도구 지시문에는 이 토큰이 거의 늘 붙는다.
     // 사람이 쓴 말에는 나오지 않으므로 오탐이 없다 — "MCP 기능을 지원할 수 있어?" 는 그대로 통과.
-    "mcp__",
+    MCP_TOOL_PREFIX,
 ];
 
 /// 제목 안에 박힌 로컬 절대경로 토큰. 앞에 경계(문자열 시작·공백·따옴표·괄호)가 있어야 하고,
@@ -235,6 +241,46 @@ fn command_title_candidate(commands: &[String]) -> String {
     String::new()
 }
 
+/// `mcp__<서버>__<도구>` 를 (서버, 도구) 로 가른다. 일반 도구(`Read`·`Edit`·`Bash`)는 `None`.
+/// 도구 이름 안에 `__` 가 더 있으면 첫 구분자만 서버 경계로 본다.
+fn split_mcp_tool(name: &str) -> Option<(&str, &str)> {
+    let (server, tool) = name.strip_prefix(MCP_TOOL_PREFIX)?.split_once("__")?;
+    if server.is_empty() || tool.is_empty() {
+        return None;
+    }
+    Some((server, tool))
+}
+
+/// 가장 많이 부른 MCP 도구를 제목 후보로 — `"<서버> · <도구> 호출[ 외 N개]"`.
+///
+/// 유일한 발화가 주입된 도구 지시문이라 전부 막히고(그래서 발화·명령·편집 파일이 다 비는)
+/// MCP 전용 세션이 있다(2026-09-16: 여덟 세션이 `[agent-platform-backend] 세션` 한 줄로 도배).
+/// 그런 세션도 `tool_counts` 에는 어느 서버의 어느 도구를 몇 번 불렀는지가 남아 있다.
+/// `Read`·`Edit`·`Bash` 같은 일반 도구는 세션을 구분해 주지 못하므로 세지 않는다.
+/// 호출 수가 같으면 map 순서(수집 순서)가 앞선 쪽을 쓴다. 없으면 빈 문자열.
+fn mcp_title_candidate(tool_counts: &IndexMap<String, u32>) -> String {
+    let mut top: Option<(&str, &str, u32)> = None;
+    let mut distinct = 0usize;
+    for (name, count) in tool_counts {
+        let Some((server, tool)) = split_mcp_tool(name) else {
+            continue;
+        };
+        distinct += 1;
+        // `>` 로만 갈아탄다 — 동률이면 먼저 나온 도구가 남는다.
+        if top.is_none_or(|(_, _, best)| *count > best) {
+            top = Some((server, tool, *count));
+        }
+    }
+    let Some((server, tool, _)) = top else {
+        return String::new();
+    };
+    let mut label = format!("{server} · {tool} 호출");
+    if distinct > 1 {
+        label.push_str(&format!(" 외 {}개", distinct - 1));
+    }
+    cut_title(&label)
+}
+
 /// 편집 파일명(최대 3개)을 마지막 제목 후보로.
 fn files_title_candidate(files: &[String]) -> String {
     files
@@ -255,13 +301,14 @@ pub fn has_title_source(s: &Session) -> bool {
 
 /// 세션 하나의 표시용 제목 — 제목을 내보내는 모든 자리의 단일 통로.
 ///
-/// 후보 순서: ai-title → 첫 요청 → **앞쪽 사용자 발화 5개** → 첫 명령 → 편집 파일명.
-/// 첫 발화 하나만 보던 때는 그게 주입 문구면 곧바로 `[프로젝트] 세션` 으로 떨어져
-/// 타임라인이 같은 제목으로 도배됐다(V2).
+/// 후보 순서: ai-title → 첫 요청 → **앞쪽 사용자 발화 5개** → 첫 명령 → **MCP 도구** →
+/// 편집 파일명. 첫 발화 하나만 보던 때는 그게 주입 문구면 곧바로 `[프로젝트] 세션` 으로
+/// 떨어져 타임라인이 같은 제목으로 도배됐다(V2).
 pub fn session_title(s: &Session) -> String {
     let files = files_title_candidate(&s.files_edited);
     let command = command_title_candidate(&s.commands);
-    let mut candidates: Vec<&str> = Vec::with_capacity(TITLE_MAX_UTTERANCES + 4);
+    let mcp = mcp_title_candidate(&s.tool_counts);
+    let mut candidates: Vec<&str> = Vec::with_capacity(TITLE_MAX_UTTERANCES + 5);
     candidates.push(s.title.as_deref().unwrap_or(""));
     candidates.push(s.intent.as_deref().unwrap_or(""));
     candidates.extend(
@@ -271,6 +318,7 @@ pub fn session_title(s: &Session) -> String {
             .take(TITLE_MAX_UTTERANCES),
     );
     candidates.push(command.as_str());
+    candidates.push(mcp.as_str());
     candidates.push(files.as_str());
     clean_title(&candidates, s.project.as_deref())
 }
@@ -1523,6 +1571,107 @@ mod tests {
         );
         assert!(command_title_candidate(&[]).is_empty());
         assert!(command_title_candidate(&["  ".into(), "pwd".into()]).is_empty());
+    }
+
+    /// 발화가 주입된 도구 지시문 하나뿐인 MCP 전용 세션은 도구 이름으로 제목을 만든다.
+    /// (2026-09-16: 여덟 세션이 명령·편집 파일 없이 `[agent-platform-backend] 세션` 으로만 나갔다)
+    #[test]
+    fn session_title_falls_back_to_mcp_tools() {
+        let tools = |pairs: &[(&str, u32)]| -> IndexMap<String, u32> {
+            pairs.iter().map(|(n, c)| ((*n).to_string(), *c)).collect()
+        };
+        let mcp_only = Session {
+            project: Some("agent-platform-backend".into()),
+            qa: vec![QaTurn {
+                time: "13:44".into(),
+                question: "Call the MCP tool mcp__suda-local__get_workflow with {\"id\":\"a1\"}"
+                    .into(),
+                answer: "a".into(),
+            }],
+            tool_counts: tools(&[
+                ("mcp__suda-local__list_projects", 1),
+                ("mcp__suda-local__get_workflow", 4),
+                ("mcp__suda-local__save_workflow_graph", 2),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            session_title(&mcp_only),
+            "suda-local · get_workflow 호출 외 2개"
+        );
+
+        // 일반 도구는 세션을 구분해 주지 못하므로 제목이 되지 않는다.
+        let plain = Session {
+            tool_counts: tools(&[("Read", 9), ("Edit", 3), ("Bash", 2)]),
+            ..mcp_only.clone()
+        };
+        assert_eq!(session_title(&plain), "[agent-platform-backend] 세션");
+
+        // MCP 도구가 한 종류뿐이면 '외 N개' 를 붙이지 않는다(일반 도구는 세지 않는다).
+        let one = Session {
+            tool_counts: tools(&[("mcp__suda-local__validate_graph", 2), ("Read", 30)]),
+            ..mcp_only.clone()
+        };
+        assert_eq!(session_title(&one), "suda-local · validate_graph 호출");
+
+        // 호출 수가 같으면 map 순서(수집 순서)가 앞선 도구.
+        assert_eq!(
+            mcp_title_candidate(&tools(&[
+                ("mcp__suda-local__create_workflow", 2),
+                ("mcp__suda-local__get_workflow", 2),
+            ])),
+            "suda-local · create_workflow 호출 외 1개"
+        );
+
+        // `mcp__서버__도구` 꼴이 아니면 세지 않는다. 도구 이름 안의 `__` 는 도구 쪽에 남는다.
+        assert!(mcp_title_candidate(&tools(&[("mcp__broken", 3), ("Read", 1)])).is_empty());
+        assert!(mcp_title_candidate(&tools(&[("mcp__srv__", 3)])).is_empty());
+        assert!(mcp_title_candidate(&IndexMap::new()).is_empty());
+        assert_eq!(
+            mcp_title_candidate(&tools(&[("mcp__srv__a__b", 1)])),
+            "srv · a__b 호출"
+        );
+
+        // 이름이 길어도 제목 한도(60자)를 넘지 않는다.
+        let long = mcp_title_candidate(&tools(&[(
+            "mcp__very-long-server-name-goes-here__extremely_long_tool_name_indeed",
+            1,
+        )]));
+        assert!(long.chars().count() == TITLE_MAX_CHARS, "{long}");
+        assert!(long.ends_with('…'), "{long}");
+    }
+
+    /// MCP 라벨의 자리 — 발화·명령이 있으면 그쪽이 이기고, 편집 파일명보다는 앞선다.
+    #[test]
+    fn session_title_mcp_candidate_precedence() {
+        let base = Session {
+            project: Some("agent-platform-backend".into()),
+            tool_counts: [("mcp__suda-local__get_workflow".to_string(), 3u32)]
+                .into_iter()
+                .collect(),
+            files_edited: vec!["D:/repo/src/graph.rs".into()],
+            ..Default::default()
+        };
+        // 편집 파일명(graph.rs)보다 MCP 라벨이 앞선다.
+        assert_eq!(session_title(&base), "suda-local · get_workflow 호출");
+
+        // 명령은 MCP 라벨보다 앞선다.
+        let with_cmd = Session {
+            commands: vec!["cargo test -p worklog-core".into()],
+            ..base.clone()
+        };
+        assert_eq!(session_title(&with_cmd), "cargo test -p worklog-core");
+
+        // 사람이 쓴 발화가 있으면 그게 제일 앞.
+        let with_qa = Session {
+            qa: vec![QaTurn {
+                time: "13:44".into(),
+                question: "워크플로 그래프 검증 붙여줘".into(),
+                answer: "a".into(),
+            }],
+            ..with_cmd.clone()
+        };
+        assert_eq!(session_title(&with_qa), "워크플로 그래프 검증 붙여줘");
     }
 
     /// 제목을 내보내는 모든 자리가 같은 통로를 지난다.

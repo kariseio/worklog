@@ -303,6 +303,11 @@ fn redact_sessions(sd: &mut SessionData, ex: &Excluder, projects: &HashSet<Strin
         }
         s.commands.clear();
         s.files_read.clear();
+        // 도구 이름도 지운다. `mcp__<서버>__<도구>` 키는 그 자체로 비공개 프로젝트의 내부
+        // 서버·기능 이름이고, [`crate::render::session_title`] 이 발화·명령이 다 지워진
+        // 세션의 제목을 여기서 만든다 — 지우지 않으면 타임라인 한 줄로 그대로 새어 나간다.
+        // (README 가 약속한 잔여 집계는 커밋·세션·집중시간뿐이라 도구 수는 남길 이유가 없다.)
+        s.tool_counts.clear();
         // 파일은 '몇 개를 고쳤나'만 남긴다 — 이름은 지우되 중복 제거 수는 보존.
         for f in &mut s.files_edited {
             *f = opaque_file(f);
@@ -414,6 +419,9 @@ mod tests {
             ],
             files_read: vec![format!(r"{cwd}\README.md")],
             commands: vec!["pytest tests/billing".into()],
+            tool_counts: [("mcp__billing-local__get_settlement".to_string(), 4u32)]
+                .into_iter()
+                .collect(),
             output_tokens: 1200,
             first_ts: Some(Utc::now()),
             last_ts: Some(Utc::now()),
@@ -479,6 +487,8 @@ mod tests {
         assert_eq!(s.project.as_deref(), Some(PRIVATE_PROJECT));
         assert!(s.cwd.is_none() && s.title.is_none() && s.intent.is_none());
         assert!(s.git_branch.is_none() && s.commands.is_empty() && s.files_read.is_empty());
+        // 도구 이름(`mcp__<서버>__<도구>`)도 남으면 안 된다 — 제목 폴백이 이걸 읽는다.
+        assert!(s.tool_counts.is_empty());
         // 질답은 시각만 남고 내용은 사라진다(집중시간 구간 계산이 어긋나지 않게).
         assert_eq!(s.qa.len(), 1);
         assert_eq!(s.qa[0].time, "14:03");
@@ -523,6 +533,40 @@ mod tests {
         let redacted = out.claude.as_ref().unwrap().sessions.last().unwrap();
         assert!(is_meta_session(redacted));
         assert_eq!(redacted.intent.as_deref(), Some(WORKLOG_SENTINEL));
+    }
+
+    /// 제외된 세션의 제목에 MCP 서버·도구 이름이 새지 않는다.
+    ///
+    /// 발화·명령·파일명을 다 지우고 나면 [`crate::render::session_title`] 의 마지막 후보가
+    /// `tool_counts` 다. 도구 이름을 남겨 두면 타임라인이
+    /// `billing-local · get_settlement 호출 · [비공개 프로젝트]` 로 나가 제외가 무의미해진다.
+    #[test]
+    fn redacted_session_title_leaks_no_mcp_tool_names() {
+        let data = sample();
+        let raw = &data.claude.as_ref().unwrap().sessions[0];
+        // 지우기 전에는 도구 이름이 제목이 될 수 있다(= 샘플이 이 경로를 실제로 탄다).
+        let mut before = raw.clone();
+        before.title = None;
+        before.intent = None;
+        before.qa.clear();
+        before.commands.clear();
+        before.files_edited.clear();
+        assert_eq!(
+            crate::render::session_title(&before),
+            "billing-local · get_settlement 호출"
+        );
+
+        let out = redact_for_document(&data, &ex(&["a-corp-billing"]));
+        let s = &out.claude.as_ref().unwrap().sessions[0];
+        let title = crate::render::session_title(s);
+        for leak in ["billing-local", "get_settlement", "mcp__"] {
+            assert!(!title.contains(leak), "{title:?} <- {leak}");
+        }
+        // 걸리지 않은 세션의 도구는 그대로다.
+        assert_eq!(
+            out.claude.as_ref().unwrap().sessions[1].tool_counts,
+            data.claude.as_ref().unwrap().sessions[1].tool_counts
+        );
     }
 
     // --- worktree · 프로젝트 닫힘 ---------------------------------------- //
