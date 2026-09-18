@@ -94,6 +94,16 @@ const TITLE_MAX_CHARS: usize = 60;
 /// 폴백 제목에 넣을 편집 파일명 최대 개수.
 const TITLE_MAX_FILES: usize = 3;
 
+/// 제목 후보로 훑어볼 사용자 발화 수. 첫 발화가 `<system-reminder>` · 붙여넣은 로그처럼
+/// 막히는 날이 잦아(2026-09-16: 열 세션이 모두 `[프로젝트] 세션`) 앞쪽 몇 개를 더 본다.
+const TITLE_MAX_UTTERANCES: usize = 5;
+
+/// 제목으로 쓰기엔 아무 내용이 없는 명령(프로그램 이름 기준, 확장자·대소문자 무시).
+const TRIVIAL_COMMANDS: [&str; 14] = [
+    "cd", "ls", "dir", "pwd", "echo", "cat", "type", "clear", "cls", "exit", "true", "false",
+    "which", "where",
+];
+
 /// 이 문구가 들어 있으면 사람이 쓴 제목이 아니다(도구 출력·주입 문구).
 const TITLE_BLOCK_CONTAINS: [&str; 5] = [
     "The following is the Codex agent history",
@@ -206,6 +216,25 @@ pub fn clean_title(candidates: &[&str], project: Option<&str>) -> String {
     }
 }
 
+/// 첫 '알맹이 있는' 명령을 제목 후보로 — 프로그램 경로는 파일명만 남긴다
+/// (`D:\\bin\\cargo.exe test -p x` → `cargo.exe test -p x`). 없으면 빈 문자열.
+fn command_title_candidate(commands: &[String]) -> String {
+    for cmd in commands {
+        let mut parts = cmd.split_whitespace();
+        let Some(prog) = parts.next() else {
+            continue;
+        };
+        let base = base_name(prog);
+        let stem = base.split('.').next().unwrap_or(base).to_ascii_lowercase();
+        if stem.is_empty() || TRIVIAL_COMMANDS.contains(&stem.as_str()) {
+            continue;
+        }
+        let rest = parts.collect::<Vec<_>>().join(" ");
+        return format!("{base} {rest}").trim().to_string();
+    }
+    String::new()
+}
+
 /// 편집 파일명(최대 3개)을 마지막 제목 후보로.
 fn files_title_candidate(files: &[String]) -> String {
     files
@@ -225,22 +254,25 @@ pub fn has_title_source(s: &Session) -> bool {
 }
 
 /// 세션 하나의 표시용 제목 — 제목을 내보내는 모든 자리의 단일 통로.
+///
+/// 후보 순서: ai-title → 첫 요청 → **앞쪽 사용자 발화 5개** → 첫 명령 → 편집 파일명.
+/// 첫 발화 하나만 보던 때는 그게 주입 문구면 곧바로 `[프로젝트] 세션` 으로 떨어져
+/// 타임라인이 같은 제목으로 도배됐다(V2).
 pub fn session_title(s: &Session) -> String {
     let files = files_title_candidate(&s.files_edited);
-    let first_q =
+    let command = command_title_candidate(&s.commands);
+    let mut candidates: Vec<&str> = Vec::with_capacity(TITLE_MAX_UTTERANCES + 4);
+    candidates.push(s.title.as_deref().unwrap_or(""));
+    candidates.push(s.intent.as_deref().unwrap_or(""));
+    candidates.extend(
         s.qa.iter()
             .map(|t| t.question.as_str())
-            .find(|q| !q.trim().is_empty())
-            .unwrap_or("");
-    clean_title(
-        &[
-            s.title.as_deref().unwrap_or(""),
-            s.intent.as_deref().unwrap_or(""),
-            first_q,
-            files.as_str(),
-        ],
-        s.project.as_deref(),
-    )
+            .filter(|q| !q.trim().is_empty())
+            .take(TITLE_MAX_UTTERANCES),
+    );
+    candidates.push(command.as_str());
+    candidates.push(files.as_str());
+    clean_title(&candidates, s.project.as_deref())
 }
 
 // --------------------------------------------------------------------------- //
@@ -1415,6 +1447,82 @@ mod tests {
         // 제목 원본이 하나도 없으면 제목 자리에 올리지 않는다.
         assert!(!has_title_source(&Session::default()));
         assert!(has_title_source(&base));
+    }
+
+    /// V2 — 앞 발화가 막혀도 다섯 번째까지 훑고, 그다음 명령 → 편집 파일명으로 내려간다.
+    /// (2026-09-16: 열 세션이 모두 `[agent-platform-backend] 세션` 이 돼 타임라인을 못 읽던 건)
+    #[test]
+    fn session_title_scans_five_utterances_then_commands() {
+        let qa = |q: &str| QaTurn {
+            time: "10:00".into(),
+            question: q.into(),
+            answer: "a".into(),
+        };
+        // 앞 두 발화가 막히면 세 번째 발화를 쓴다.
+        let s = Session {
+            project: Some("agent-platform-backend".into()),
+            qa: vec![
+                qa("<system-reminder> 무시"),
+                qa("Read D:/repo/src/render.rs"),
+                qa("결제 재시도 로직 정리해줘"),
+                qa("네 번째 발화"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(session_title(&s), "결제 재시도 로직 정리해줘");
+
+        // 다섯 번째까지 본다.
+        let blocked = || qa("<system-reminder> 무시");
+        let s5 = Session {
+            qa: vec![
+                blocked(),
+                blocked(),
+                blocked(),
+                blocked(),
+                qa("다섯 번째가 진짜 요청"),
+                qa("여섯 번째 발화"),
+            ],
+            ..s.clone()
+        };
+        assert_eq!(session_title(&s5), "다섯 번째가 진짜 요청");
+
+        // 여섯 번째부터는 보지 않는다 — 명령 → 파일명 순으로 내려간다.
+        let s6 = Session {
+            qa: vec![
+                blocked(),
+                blocked(),
+                blocked(),
+                blocked(),
+                blocked(),
+                qa("여섯 번째가 진짜 요청"),
+            ],
+            commands: vec!["cd D:/repo".into(), "cargo test --workspace".into()],
+            files_edited: vec!["D:/repo/src/pay.rs".into()],
+            ..s.clone()
+        };
+        // 알맹이 없는 `cd` 는 건너뛰고 첫 실제 명령을 쓴다.
+        assert_eq!(session_title(&s6), "cargo test --workspace");
+
+        // 명령이 전부 시시하면 편집 파일명, 그것도 없으면 `[프로젝트] 세션`.
+        let s7 = Session {
+            commands: vec!["cd D:/repo".into(), "ls".into()],
+            ..s6.clone()
+        };
+        assert_eq!(session_title(&s7), "pay.rs");
+        let s8 = Session {
+            commands: Vec::new(),
+            files_edited: Vec::new(),
+            ..s6
+        };
+        assert_eq!(session_title(&s8), "[agent-platform-backend] 세션");
+
+        // 프로그램 경로는 파일명만 남는다.
+        assert_eq!(
+            command_title_candidate(&["D:\\bin\\cargo.exe test -p worklog-core".into()]),
+            "cargo.exe test -p worklog-core"
+        );
+        assert!(command_title_candidate(&[]).is_empty());
+        assert!(command_title_candidate(&["  ".into(), "pwd".into()]).is_empty());
     }
 
     /// 제목을 내보내는 모든 자리가 같은 통로를 지난다.
