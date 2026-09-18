@@ -223,10 +223,18 @@ pub fn system_prompt(id: &str) -> String {
 }
 
 /// 최종 문서: 제목 줄 + LLM 본문 + (템플릿별) 지표·타임라인 + (선택) 수집 원본 부록.
+///
+/// `summary_error` 는 요약 **시도가 실패한 사유**([`crate::summarize::SummaryOutcome::error`]).
+/// 이게 있으면 문서가 '요약을 안 한 날' 과 '요약이 실패한 날' 을 구분해 적는다 —
+/// 요약이 통째로 없으면 경고 한 줄, 부분 요약이면 본문 아래 한 줄.
+// 문서 한 장을 조립하는 데 필요한 값이 그대로 인자다 — 묶어서 구조체로 만들면
+// 호출부(서비스·앱·테스트)가 오히려 읽기 어려워진다.
+#[allow(clippy::too_many_arguments)]
 pub fn compose(
     id: &str,
     target: NaiveDate,
     summary: Option<&str>,
+    summary_error: Option<&str>,
     analysis: &Analysis,
     tz: Tz,
     facts: &str,
@@ -237,9 +245,22 @@ pub fn compose(
         format!("# 업무일지 {target} ({})", weekday_ko(target)),
         String::new(),
     ];
-    match summary.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(s) => lines.push(s.to_string()),
-        None => lines.push("> LLM 요약을 사용하지 않았습니다. 아래 지표를 참고하세요.".into()),
+    let err = summary_error.map(str::trim).filter(|e| !e.is_empty());
+    match (summary.map(str::trim).filter(|s| !s.is_empty()), err) {
+        // 부분 요약 — 본문은 살리되 무엇이 빠졌는지 바로 아래 한 줄로.
+        (Some(s), Some(e)) => {
+            lines.push(s.to_string());
+            lines.push(String::new());
+            lines.push(format!("> ⚠ 요약 일부만 생성됨: {e}"));
+        }
+        (Some(s), None) => lines.push(s.to_string()),
+        // 시도했다가 실패 — '사용하지 않았습니다' 로 뭉뚱그리지 않는다(V2).
+        (None, Some(e)) => lines.push(format!(
+            "> ⚠ AI 요약 시도가 실패했습니다: {e}. 아래는 수집 데이터만 정리한 것입니다."
+        )),
+        (None, None) => {
+            lines.push("> LLM 요약을 사용하지 않았습니다. 아래 지표를 참고하세요.".into())
+        }
     }
 
     lines.push(String::new());
@@ -461,8 +482,12 @@ const RULES: &str = concat!(
     "6. '메모' 는 사용자가 직접 남긴 1차 사실(구두 요청·결정·할 일)이다. 반드시 반영하고 ",
     "요청자(@이름)를 그대로 명시한다.\n",
     "7. 근거 앵커 — 성과·진행을 말하는 줄은 끝에 근거 하나를 괄호로 붙인다. ",
-    "커밋 해시 7자리 `(a1b2c3d)` · 편집 파일명 `(auth.py)` · 회의 제목 `(회의: 코드리뷰)` · ",
-    "메모 시각 `(메모 10:35)` 중 하나만 쓴다. 데이터에서 근거를 찾을 수 없는 줄은 아예 쓰지 마라 — ",
+    "근거는 **이 프롬프트에 들어온 오늘 데이터 안에 있는 것만** 쓴다. ",
+    "커밋 해시 7자리 `(a1b2c3d)` 는 아래 '## Git 커밋' 목록(오늘 커밋)에 실제로 적힌 해시만 그대로 옮긴다 — ",
+    "기억·추측으로 해시를 지어내지 말고, 다른 날·다른 저장소의 해시를 끌어오지 마라. ",
+    "오늘 커밋 목록이 없거나 그 줄에 맞는 해시가 없으면 해시 대신 편집 파일명 `(auth.py)` · ",
+    "회의 제목 `(회의: 코드리뷰)` · 메모 시각 `(메모 10:35)` 중 **오늘 데이터에 있는 것** 하나를 쓴다. ",
+    "데이터에서 근거를 찾을 수 없는 줄은 아예 쓰지 마라 — ",
     "줄 수를 채우려고 근거 없는 줄을 만들지 마라.\n",
     "8. 커밋 0건인 날 — 신호에 '## Git 커밋' 섹션이 없거나 머리글의 가용 데이터 줄에 `Git ✅(N)` 의 N 이 ",
     "보이지 않으면 그날 커밋은 0건이다. 이때는 '완료'·'마무리'·'확정' 같은 완료 단정을 쓰지 말고 ",
@@ -840,6 +865,7 @@ mod tests {
             "standard",
             day(),
             Some("  > 한 줄 요약\n\n## 오늘의 성과\n- [repoA] 큰 기능 완료  "),
+            None,
             &sample_analysis(),
             tz,
             "# 원본 사실 데이터",
@@ -864,14 +890,14 @@ mod tests {
     fn compose_report_is_metrics_line_only_and_retro_matches_standard() {
         let tz = get_tz("Asia/Seoul");
         let a = sample_analysis();
-        let rep = compose("report", day(), Some("> 요약"), &a, tz, "", false);
+        let rep = compose("report", day(), Some("> 요약"), None, &a, tz, "", false);
         assert!(rep.starts_with("# 업무일지 2026-07-28 (화)\n\n> 요약\n\n## 지표\n- 커밋 **2**"));
         assert!(!rep.contains("프로젝트별 집중"));
         assert!(!rep.contains("타임라인"));
         assert!(!rep.contains("<details>"));
 
-        let retro = compose("retro", day(), Some("> 요약"), &a, tz, "", false);
-        let standard = compose("standard", day(), Some("> 요약"), &a, tz, "", false);
+        let retro = compose("retro", day(), Some("> 요약"), None, &a, tz, "", false);
+        let standard = compose("standard", day(), Some("> 요약"), None, &a, tz, "", false);
         assert_eq!(retro, standard); // 결정론적 부분은 표준과 같다
     }
 
@@ -881,6 +907,7 @@ mod tests {
         let md = compose(
             "standard",
             day(),
+            None,
             None,
             &Analysis::default(),
             tz,
@@ -900,12 +927,114 @@ mod tests {
             "report",
             day(),
             Some("   "),
+            None,
             &Analysis::default(),
             tz,
             "",
             false,
         );
         assert!(blank.contains("> LLM 요약을 사용하지 않았습니다."));
+    }
+
+    /// V2 — 요약 실패는 '사용하지 않았습니다' 와 다른 문장으로 남는다(안 한 날 ≠ 실패한 날).
+    #[test]
+    fn compose_marks_summary_failure_and_partial_summary() {
+        let tz = get_tz("Asia/Seoul");
+        let a = sample_analysis();
+
+        // (a) 요약 없음 + 사유 있음 — 경고 한 줄.
+        let failed = compose(
+            "standard",
+            day(),
+            None,
+            Some("claude CLI 시간 초과(600초)"),
+            &a,
+            tz,
+            "",
+            false,
+        );
+        assert!(failed.contains(
+            "> ⚠ AI 요약 시도가 실패했습니다: claude CLI 시간 초과(600초). 아래는 수집 데이터만 정리한 것입니다."
+        ));
+        assert!(!failed.contains("LLM 요약을 사용하지 않았습니다"));
+
+        // (b) 요약을 쓰지 않은 날은 예전 문구 그대로 — 두 문서가 서로 달라야 한다.
+        let skipped = compose("standard", day(), None, None, &a, tz, "", false);
+        assert!(skipped.contains("> LLM 요약을 사용하지 않았습니다. 아래 지표를 참고하세요."));
+        assert!(!skipped.contains("⚠"));
+        assert_ne!(failed, skipped);
+
+        // (c) 부분 요약 — 본문은 살리고 바로 아래 한 줄.
+        let partial = compose(
+            "standard",
+            day(),
+            Some("> 한 줄 요약\n\n## 오늘의 성과\n- [repoA] 큰 기능 (a1b2c3d)"),
+            Some("claude CLI 시간 초과(600초)"),
+            &a,
+            tz,
+            "",
+            false,
+        );
+        assert!(partial.starts_with("# 업무일지 2026-07-28 (화)\n\n> 한 줄 요약\n"));
+        assert!(partial.contains("- [repoA] 큰 기능 (a1b2c3d)"));
+        assert!(partial.contains("\n> ⚠ 요약 일부만 생성됨: claude CLI 시간 초과(600초)\n"));
+        // 경고는 지표 위, 본문 아래에.
+        let warn = partial.find("> ⚠ 요약 일부만").unwrap();
+        assert!(warn < partial.find("## 지표").unwrap());
+        assert!(warn > partial.find("## 오늘의 성과").unwrap());
+
+        // (d) 빈 사유 문자열은 사유 없음과 같게 본다.
+        let blank = compose("standard", day(), None, Some("   "), &a, tz, "", false);
+        assert!(blank.contains("> LLM 요약을 사용하지 않았습니다."));
+        assert!(!blank.contains("⚠"));
+    }
+
+    /// V2 — 규칙 7: 앵커는 그날 프롬프트에 들어온 데이터에서만. (해시를 지어내던 건)
+    #[test]
+    fn rule_seven_binds_anchors_to_todays_data() {
+        for t in all() {
+            let p = system_prompt(t.id);
+            assert!(
+                p.contains("근거는 **이 프롬프트에 들어온 오늘 데이터 안에 있는 것만** 쓴다"),
+                "{}",
+                t.id
+            );
+            assert!(
+                p.contains("'## Git 커밋' 목록(오늘 커밋)에 실제로 적힌 해시만 그대로 옮긴다"),
+                "{}",
+                t.id
+            );
+            assert!(
+                p.contains(
+                    "기억·추측으로 해시를 지어내지 말고, 다른 날·다른 저장소의 해시를 끌어오지 마라"
+                ),
+                "{}",
+                t.id
+            );
+            // 커밋이 없으면 파일명·회의·메모로, 그것도 없으면 쓰지 않는다.
+            assert!(
+                p.contains("오늘 커밋 목록이 없거나 그 줄에 맞는 해시가 없으면 해시 대신"),
+                "{}",
+                t.id
+            );
+            assert!(
+                p.contains("중 **오늘 데이터에 있는 것** 하나를 쓴다"),
+                "{}",
+                t.id
+            );
+            assert!(
+                p.contains("근거를 찾을 수 없는 줄은 아예 쓰지 마라"),
+                "{}",
+                t.id
+            );
+            // 규칙 번호는 그대로 7·8·9.
+            assert!(
+                p.contains("7. 근거 앵커") && p.contains("8. 커밋 0건인 날"),
+                "{}",
+                t.id
+            );
+            assert!(p.contains("9. 메모에서 나온 줄"), "{}", t.id);
+        }
     }
 
     #[test]
@@ -923,6 +1052,7 @@ mod tests {
                 compose(
                     "standard",
                     d(n),
+                    None,
                     None,
                     &Analysis::default(),
                     get_tz("Asia/Seoul"),

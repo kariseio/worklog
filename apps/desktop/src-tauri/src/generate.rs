@@ -22,7 +22,7 @@ use worklog_core::{
     output::SinkResult,
     service,
     store::{Document, run_kind, run_status},
-    summarize::Summarizer,
+    summarize::{SummaryOutcome, Summarizer},
     template,
 };
 
@@ -220,21 +220,22 @@ fn run(
     }
     let rendered = service::render_all(&cfg, &data, &statuses, ctx.tz());
 
-    let summary = if data.is_empty() {
+    let outcome = if data.is_empty() {
         progress("요약", "수집된 활동이 없어 건너뜀");
-        None
+        SummaryOutcome::default()
     } else {
         progress("요약", "");
         Summarizer::new(cfg.summarizer.clone())
             .with_progress(progress.clone())
             .with_cancel(cancel.clone())
-            .summarize_day_with(
+            .summarize_day_outcome(
                 &template::system_prompt(tpl),
                 &rendered.signal,
                 &date.to_string(),
                 &rendered.availability,
             )
     };
+    let (summary, summary_error) = (outcome.text, outcome.error);
     if is_cancelled() {
         return Outcome::cancelled();
     }
@@ -244,6 +245,7 @@ fn run(
         tpl,
         date,
         summary.as_deref(),
+        summary_error.as_deref(),
         &rendered.analysis,
         ctx.tz(),
         &rendered.facts,
@@ -274,9 +276,17 @@ fn run(
         .filter(|s| !s.ok)
         .map(|s| format!("{}: {}", s.name, s.error.clone().unwrap_or_default()))
         .collect();
+    // 저장은 됐지만 반쪽인 경우 — AI 요약 실패와 내보내기 실패를 Done.error 한 줄로(N6 토스트가 읽는다).
+    let mut notes: Vec<String> = Vec::new();
+    if let Some(e) = &summary_error {
+        notes.push(format!("AI 요약 실패: {e}"));
+    }
+    if !failed.is_empty() {
+        notes.push(format!("일부 내보내기 실패 — {}", failed.join(" / ")));
+    }
     Outcome {
         status: run_status::OK,
-        error: (!failed.is_empty()).then(|| format!("일부 내보내기 실패 — {}", failed.join(" / "))),
+        error: (!notes.is_empty()).then(|| notes.join(" / ")),
         sinks,
         has_summary: summary.is_some(),
     }
@@ -305,7 +315,7 @@ fn finish(app: &AppHandle, run_id: i64, date: NaiveDate, outcome: Outcome) {
     match outcome.status {
         run_status::OK => {
             let body = match &outcome.error {
-                Some(e) => format!("{date} 일지를 저장했습니다. {e}"),
+                Some(e) => format!("{date} 일지를 저장했습니다({e})."),
                 None if outcome.has_summary => format!("{date} 일지를 저장했습니다."),
                 None => format!("{date} 일지를 저장했습니다(AI 요약 없음)."),
             };

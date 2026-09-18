@@ -649,6 +649,10 @@ pub struct GenerateResult {
     pub worklog: WorkLog,
     pub statuses: Vec<SourceStatus>,
     pub rendered: Rendered,
+    /// AI 요약을 **시도했다가 실패한** 사유. 요약을 아예 쓰지 않은 날(`--no-llm` ·
+    /// `provider = none`)은 None — 문서도 그렇게 구분해 적는다
+    /// ([`crate::summarize::SummaryOutcome`]).
+    pub summary_error: Option<String>,
 }
 
 /// 기본 경로의 메모 저장소를 연다. 실패하면 경고 후 None(메모 없이 진행).
@@ -702,20 +706,22 @@ pub fn generate_with(
     let note_items = notes::items_for(store, ctx.target_date());
     let Collected { data, statuses } = collect(cfg, &ctx, &wanted, note_items);
     let rendered = render_all(cfg, &data, &statuses, ctx.tz());
-    let summary = if !no_llm && !data.is_empty() {
-        summarizer.summarize_day_with(
+    let outcome = if !no_llm && !data.is_empty() {
+        summarizer.summarize_day_outcome(
             &template::system_prompt(tpl),
             &rendered.signal,
             &ctx.target_date().to_string(),
             &rendered.availability,
         )
     } else {
-        None
+        crate::summarize::SummaryOutcome::default()
     };
+    let (summary, summary_error) = (outcome.text, outcome.error);
     let full = template::compose(
         tpl,
         ctx.target_date(),
         summary.as_deref(),
+        summary_error.as_deref(),
         &rendered.analysis,
         ctx.tz(),
         &rendered.facts,
@@ -732,6 +738,7 @@ pub fn generate_with(
         worklog,
         statuses,
         rendered,
+        summary_error,
     })
 }
 
@@ -1216,6 +1223,7 @@ mod tests {
             "standard",
             d(2026, 7, 6),
             Some("> 오늘 한 일"),
+            None,
             &a,
             tz,
             "# 원본 사실 데이터\n- 커밋 목록 등",

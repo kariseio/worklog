@@ -21,7 +21,7 @@ use std::{
 };
 
 use crate::{
-    config::SummarizerConfig,
+    config::{self, SummarizerConfig},
     render::{SESSION_SECTION_HEADER, WORKLOG_SENTINEL},
     template,
 };
@@ -59,8 +59,19 @@ fn configured_model(cfg: &SummarizerConfig) -> Option<&str> {
     (!m.is_empty()).then_some(m)
 }
 
-/// claude CLI 한 번 호출 상한.
-const CLI_TIMEOUT: Duration = Duration::from_secs(240);
+/// 세션별 압축(map) 한 번 호출 상한의 천장(초). 종합(reduce)은 설정값 전체를 쓰고,
+/// map 은 `min(설정값, 이 값)` — 조각 하나가 오래 물고 있어도 하루 전체가 끝나게.
+pub const MAP_TIMEOUT_CAP_SECS: u64 = 300;
+
+/// 이번 호출의 상한. 설정값(`summarizer.timeout_secs`, 기본 600초)을 쓰되
+/// 손으로 만든 설정이 0 이어도 최소값 아래로는 내려가지 않게 조인다.
+fn call_timeout(cfg: &SummarizerConfig) -> Duration {
+    Duration::from_secs(
+        cfg.timeout_secs
+            .clamp(config::SUMMARY_TIMEOUT_MIN, config::SUMMARY_TIMEOUT_MAX),
+    )
+}
+
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +146,23 @@ pub trait LlmCaller: Send + Sync {
         cfg: &SummarizerConfig,
         cancel: Option<&AtomicBool>,
     ) -> Option<String>;
+
+    /// [`call`](Self::call) 과 같되 **실패 사유**를 돌려준다(문서에 한 줄로 적힌다).
+    /// 기본 구현은 사유 없이 감싸기만 한다 — 실제 호출기만 사유를 채운다.
+    fn call_detailed(
+        &self,
+        system: &str,
+        user: &str,
+        cfg: &SummarizerConfig,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<String, String> {
+        self.call(system, user, cfg, cancel)
+            .ok_or_else(|| "요약 실패(사유 없음)".to_string())
+    }
 }
+
+/// provider 가 없어(설치·키 없음, 모르는 값) 호출조차 못 했을 때의 사유.
+pub const NO_SUMMARIZER: &str = "요약기 없음 — claude CLI 도 ANTHROPIC_API_KEY 도 없습니다";
 
 /// 실제 provider 로 호출.
 pub struct RealCaller;
@@ -148,11 +175,25 @@ impl LlmCaller for RealCaller {
         cfg: &SummarizerConfig,
         cancel: Option<&AtomicBool>,
     ) -> Option<String> {
-        match resolve_provider(&cfg.provider) {
+        self.call_detailed(system, user, cfg, cancel).ok()
+    }
+
+    fn call_detailed(
+        &self,
+        system: &str,
+        user: &str,
+        cfg: &SummarizerConfig,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<String, String> {
+        let r = match resolve_provider(&cfg.provider) {
             Provider::ClaudeCli => call_claude_cli(system, user, cfg, cancel),
             Provider::AnthropicApi => call_anthropic_api(system, user, cfg),
-            Provider::None => None,
+            Provider::None => Err(NO_SUMMARIZER.to_string()),
+        };
+        if let Err(e) = &r {
+            tracing::warn!("요약 호출 실패: {e}");
         }
+        r
     }
 }
 
@@ -224,10 +265,9 @@ fn call_claude_cli(
     user: &str,
     cfg: &SummarizerConfig,
     cancel: Option<&AtomicBool>,
-) -> Option<String> {
+) -> Result<String, String> {
     let Some(exe) = claude_exe() else {
-        tracing::warn!("claude CLI 를 찾을 수 없어 요약을 건너뜁니다.");
-        return None;
+        return Err("claude CLI 를 찾을 수 없습니다".into());
     };
     // 이 요약 호출이 만드는 Claude 세션을 나중에 확실히 걸러내기 위한 표식(맨 앞).
     let full = format!("{WORKLOG_SENTINEL}\n{system}\n\n{user}");
@@ -237,37 +277,40 @@ fn call_claude_cli(
     if let Some(model) = configured_model(cfg) {
         cmd.args(["--model", model]);
     }
-    match run_with_timeout(cmd, &full, CLI_TIMEOUT, cancel) {
+    match run_with_timeout(cmd, &full, call_timeout(cfg), cancel) {
         Ok((0, out, _)) => {
             let out = out.trim();
-            (!out.is_empty()).then(|| out.to_string())
+            if out.is_empty() {
+                return Err("claude CLI 응답이 비어 있습니다".into());
+            }
+            Ok(out.to_string())
         }
-        Ok((code, _, err)) => {
-            tracing::warn!(
-                "claude CLI 요약 실패(exit {code}): {}",
-                err.chars().take(300).collect::<String>()
-            );
-            None
-        }
-        Err(e) => {
-            tracing::warn!("claude CLI 요약 실패: {e}");
-            None
-        }
+        Ok((code, _, err)) => Err(format!("claude CLI 오류(exit {code}): {}", snippet(&err))),
+        // 시간 초과·취소 사유는 `run_with_timeout` 이 이미 사람이 읽을 문장으로 만들어 준다.
+        Err(e) => Err(format!("claude CLI {e}")),
     }
 }
 
-fn call_anthropic_api(system: &str, user: &str, cfg: &SummarizerConfig) -> Option<String> {
+/// 오류 본문은 문서 한 줄에 들어갈 만큼만.
+fn snippet(s: &str) -> String {
+    let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() <= 160 {
+        return one;
+    }
+    format!("{}…", one.chars().take(159).collect::<String>())
+}
+
+fn call_anthropic_api(system: &str, user: &str, cfg: &SummarizerConfig) -> Result<String, String> {
     let key = std::env::var("ANTHROPIC_API_KEY")
         .ok()
         .filter(|k| !k.is_empty());
     let Some(key) = key else {
-        tracing::warn!("ANTHROPIC_API_KEY 가 없어 Anthropic API 요약을 건너뜁니다.");
-        return None;
+        return Err("API 오류: ANTHROPIC_API_KEY 가 없습니다".into());
     };
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(300))
+        .timeout(call_timeout(cfg))
         .build()
-        .ok()?;
+        .map_err(|e| format!("API 오류: {e}"))?;
     let body = serde_json::json!({
         // 모델을 비워 뒀으면 API 에는 빈 값을 보낼 수 없으므로 기본 모델을 쓴다.
         "model": configured_model(cfg).unwrap_or(DEFAULT_API_MODEL),
@@ -283,22 +326,25 @@ fn call_anthropic_api(system: &str, user: &str, cfg: &SummarizerConfig) -> Optio
         .send();
     let resp = match resp {
         Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("Anthropic API 요약 실패: {e}");
-            return None;
+        Err(e) if e.is_timeout() => {
+            return Err(format!(
+                "API 오류: 시간 초과({}초)",
+                call_timeout(cfg).as_secs()
+            ));
         }
+        Err(e) => return Err(format!("API 오류: {e}")),
     };
     let status = resp.status();
     let text = resp.text().unwrap_or_default();
     if !status.is_success() {
-        tracing::warn!(
-            "Anthropic API 요약 실패(HTTP {}): {}",
+        return Err(format!(
+            "API 오류(HTTP {}): {}",
             status.as_u16(),
-            text.chars().take(300).collect::<String>()
-        );
-        return None;
+            snippet(&text)
+        ));
     }
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("API 오류: 응답 해석 실패({e})"))?;
     let out: String = v
         .get("content")
         .and_then(|c| c.as_array())
@@ -312,7 +358,10 @@ fn call_anthropic_api(system: &str, user: &str, cfg: &SummarizerConfig) -> Optio
         })
         .unwrap_or_default();
     let out = out.trim();
-    (!out.is_empty()).then(|| out.to_string())
+    if out.is_empty() {
+        return Err("API 오류: 응답이 비어 있습니다".into());
+    }
+    Ok(out.to_string())
 }
 
 // --------------------------------------------------------------------------- //
@@ -321,6 +370,55 @@ fn call_anthropic_api(system: &str, user: &str, cfg: &SummarizerConfig) -> Optio
 
 /// 진행 상황 콜백: ("단계", "세부"). 예: ("요약", "세션 3/7").
 pub type ProgressFn = dyn Fn(&str, &str) + Send + Sync;
+
+/// 요약 한 번의 결과 — **'안 했다' 와 '하려다 실패했다' 를 구분**하려고 사유를 함께 돌려준다.
+///
+/// * `text: Some`, `error: None` — 정상.
+/// * `text: None`, `error: Some` — 시도했지만 실패(문서에 경고 한 줄이 남는다).
+/// * `text: Some`, `error: Some` — **부분 요약**(map 은 됐고 reduce 가 실패).
+/// * 둘 다 `None` — 사용자가 요약을 끈 것(`provider = none`, `--no-llm`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SummaryOutcome {
+    pub text: Option<String>,
+    pub error: Option<String>,
+}
+
+impl SummaryOutcome {
+    pub fn ok(text: impl Into<String>) -> Self {
+        Self {
+            text: Some(text.into()),
+            error: None,
+        }
+    }
+
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self {
+            text: None,
+            error: Some(error.into()),
+        }
+    }
+
+    fn of(r: Result<String, String>) -> Self {
+        match r {
+            Ok(t) => Self::ok(t),
+            Err(e) => Self::failed(e),
+        }
+    }
+}
+
+/// 병합(reduce)이 실패해 세션별 압축본만 붙였을 때 문서 맨 앞에 남는 표시.
+pub const PARTIAL_HEADING: &str = "(부분 요약 — 병합 단계 실패, 세션별 요약을 그대로 붙임)";
+
+/// 세션별 압축본을 그대로 이어 붙인 '부분 요약' 본문.
+fn partial_text(condensed: &[(String, String)]) -> String {
+    let body = condensed
+        .iter()
+        .filter(|(_, s)| !s.trim().is_empty())
+        .map(|(l, s)| format!("### {l}\n{}", s.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("> {PARTIAL_HEADING}\n\n{body}")
+}
 
 pub struct Summarizer {
     cfg: SummarizerConfig,
@@ -376,12 +474,51 @@ impl Summarizer {
         }
     }
 
-    fn call(&self, system: &str, user: &str) -> Option<String> {
+    /// 한 번 호출 — 실패 사유까지. 취소된 뒤에는 호출하지 않는다.
+    fn call_detailed(
+        &self,
+        system: &str,
+        user: &str,
+        cfg: &SummarizerConfig,
+    ) -> Result<String, String> {
         if self.cancelled() {
-            return None;
+            return Err("취소됨".into());
         }
         self.caller
-            .call(system, user, &self.cfg, self.cancel.as_deref())
+            .call_detailed(system, user, cfg, self.cancel.as_deref())
+    }
+
+    /// 종합(reduce)·단일 호출 — 설정 상한(`timeout_secs`)을 그대로 쓴다.
+    fn call(&self, system: &str, user: &str) -> Option<String> {
+        self.call_detailed(system, user, &self.cfg).ok()
+    }
+
+    /// 세션별 압축(map) 한 번 — 상한은 `min(설정값, `[`MAP_TIMEOUT_CAP_SECS`]`)`.
+    fn call_map(&self, system: &str, user: &str) -> Result<String, String> {
+        self.call_detailed(system, user, &self.map_cfg())
+    }
+
+    /// map 단계용 설정 사본 — 호출 상한만 줄인 것.
+    fn map_cfg(&self) -> SummarizerConfig {
+        let mut c = self.cfg.clone();
+        c.timeout_secs = c.timeout_secs.min(MAP_TIMEOUT_CAP_SECS);
+        c
+    }
+
+    /// 종합(reduce) 한 번 — 실패 사유까지.
+    fn reduce(
+        &self,
+        system: &str,
+        signal: &str,
+        date_iso: &str,
+        availability: &str,
+    ) -> Result<String, String> {
+        self.report("요약", "종합");
+        self.call_detailed(
+            system,
+            &user_prompt(date_iso, signal, availability),
+            &self.cfg,
+        )
     }
 
     /// 표준 템플릿으로 단일 호출 요약. provider 가 none 이면 None.
@@ -406,8 +543,7 @@ impl Summarizer {
             tracing::info!("요약기: 사용 안 함 (수집 데이터만 정리)");
             return None;
         }
-        self.report("요약", "종합");
-        self.call(system, &user_prompt(date_iso, signal, availability))
+        self.reduce(system, signal, date_iso, availability).ok()
     }
 
     /// system · user 를 가공 없이 한 번만 호출한다.
@@ -451,17 +587,36 @@ impl Summarizer {
         date_iso: &str,
         availability: &str,
     ) -> Option<String> {
+        self.summarize_day_outcome(system, signal, date_iso, availability)
+            .text
+    }
+
+    /// [`summarize_day_with`](Self::summarize_day_with) 과 같은 일을 하되 **실패 사유까지** 돌려준다.
+    ///
+    /// 문서가 '요약을 안 한 날' 과 '요약이 실패한 날' 을 구분할 수 있게 하는 유일한 통로다
+    /// (`docs/product-plan.md` V2). 병합(reduce)만 실패하면 세션별 압축본을 부분 요약으로 돌려준다.
+    pub fn summarize_day_outcome(
+        &self,
+        system: &str,
+        signal: &str,
+        date_iso: &str,
+        availability: &str,
+    ) -> SummaryOutcome {
         if self.provider() == Provider::None {
-            tracing::info!("요약기: 사용 안 함 (수집 데이터만 정리)");
-            return None;
+            // 사용자가 끈 것(provider = none)은 실패가 아니다 — 문서도 '사용 안 함' 으로 적는다.
+            if self.cfg.provider.trim() == "none" {
+                tracing::info!("요약기: 사용 안 함 (수집 데이터만 정리)");
+                return SummaryOutcome::default();
+            }
+            return SummaryOutcome::failed(NO_SUMMARIZER);
         }
         if signal.chars().count() <= self.cfg.map_reduce_chars {
-            return self.summarize_with(system, signal, date_iso, availability);
+            return SummaryOutcome::of(self.reduce(system, signal, date_iso, availability));
         }
         let marker = format!("\n{SESSION_SECTION_HEADER}");
         let Some((frame, sess)) = signal.split_once(&marker) else {
             // 쪼갤 세션 섹션이 없음
-            return self.summarize_with(system, signal, date_iso, availability);
+            return SummaryOutcome::of(self.reduce(system, signal, date_iso, availability));
         };
         let blocks: Vec<(String, String)> = sess
             .trim()
@@ -488,7 +643,7 @@ impl Summarizer {
             })
             .collect();
         if blocks.is_empty() {
-            return self.summarize_with(system, signal, date_iso, availability);
+            return SummaryOutcome::of(self.reduce(system, signal, date_iso, availability));
         }
 
         tracing::info!(
@@ -498,7 +653,7 @@ impl Summarizer {
             blocks.len(),
             self.cfg.map_workers
         );
-        let mut condensed = self.map_condense(&blocks, false);
+        let (mut condensed, mut mapped_ok) = self.map_condense(&blocks, false);
         let assemble = |condensed: &[(String, String)]| {
             let sess_md = condensed
                 .iter()
@@ -514,15 +669,35 @@ impl Summarizer {
         let mut new_signal = assemble(&condensed);
         if new_signal.chars().count() > self.cfg.map_reduce_chars {
             // 작은 세션이 많아 통과분만으로도 여전히 크면 전부 강제 압축(reduce 입력 폭주 방지).
-            condensed = self.map_condense(&blocks, true);
+            (condensed, mapped_ok) = self.map_condense(&blocks, true);
             new_signal = assemble(&condensed);
         }
-        self.summarize_with(system, &new_signal, date_iso, availability)
+        match self.reduce(system, &new_signal, date_iso, availability) {
+            Ok(t) => SummaryOutcome::ok(t),
+            // 세션별 압축은 됐는데 종합만 실패 — 빈손으로 돌아가지 말고 압축본을 그대로 붙인다.
+            Err(e) if mapped_ok > 0 => {
+                tracing::warn!(
+                    "종합(reduce) 실패: {e} → 세션별 압축본 {mapped_ok}건으로 부분 요약"
+                );
+                SummaryOutcome {
+                    text: Some(partial_text(&condensed)),
+                    error: Some(e),
+                }
+            }
+            Err(e) => SummaryOutcome::failed(e),
+        }
     }
 
     /// 세션 블록들을 병렬로 개별 압축. `force_all` 이 아니면 작은 세션은 LLM 없이 원문 유지하고
-    /// 큰 세션만 압축(임계 초과면 조각내 2단). 반환: [(라벨, 본문 요약), ...] (입력 순서).
-    fn map_condense(&self, blocks: &[(String, String)], force_all: bool) -> Vec<(String, String)> {
+    /// 큰 세션만 압축(임계 초과면 조각내 2단).
+    ///
+    /// 반환: ([(라벨, 본문 요약), ...] (입력 순서), **성공한 압축 호출 수**).
+    /// 뒤의 수가 0 이면 map 단계가 통째로 실패한 것이라 부분 요약도 내지 않는다.
+    fn map_condense(
+        &self,
+        blocks: &[(String, String)],
+        force_all: bool,
+    ) -> (Vec<(String, String)>, usize) {
         use rayon::prelude::*;
 
         let small = std::cmp::max(600, self.cfg.map_reduce_chars / 12); // 이보다 작은 세션은 질답 원문 그대로
@@ -533,6 +708,7 @@ impl Summarizer {
             .ok();
         let total = blocks.len();
         let done = AtomicUsize::new(0);
+        let ok_calls = AtomicUsize::new(0);
         self.report("요약", &format!("세션 0/{total}"));
         let condense_one = |(label, block): &(String, String)| -> (String, String) {
             let finished = |me: &Self| {
@@ -544,26 +720,30 @@ impl Summarizer {
                 return (label.clone(), block_body(block)); // 작은 세션: 압축 없이 원문(호출 절약)
             }
             let big = if block.chars().count() > self.cfg.map_reduce_chars {
-                self.condense_chunks(label, block)
+                self.condense_chunks(label, block, &ok_calls)
             } else {
                 block.clone()
             };
-            let summ = self.call(CONDENSE_SYSTEM_KO, &big);
+            let summ = self.call_map(CONDENSE_SYSTEM_KO, &big);
             finished(self);
-            // 최종 압축 실패 시엔 (원문 block 이 아니라) 이미 만든 조각요약 big 으로 폴백.
-            (
-                label.clone(),
-                summ.unwrap_or_else(|| block_body(&big)).trim().to_string(),
-            )
+            match summ {
+                Ok(s) => {
+                    ok_calls.fetch_add(1, Ordering::Relaxed);
+                    (label.clone(), s.trim().to_string())
+                }
+                // 최종 압축 실패 시엔 (원문 block 이 아니라) 이미 만든 조각요약 big 으로 폴백.
+                Err(_) => (label.clone(), block_body(&big).trim().to_string()),
+            }
         };
-        match pool {
+        let out: Vec<(String, String)> = match pool {
             Some(pool) => pool.install(|| blocks.par_iter().map(condense_one).collect()),
             None => blocks.iter().map(condense_one).collect(),
-        }
+        };
+        (out, ok_calls.load(Ordering::Relaxed))
     }
 
     /// 초대형 세션 블록을 줄 단위로 조각내 각 조각을 먼저 요약, 이어붙인다(세션 내부 map).
-    fn condense_chunks(&self, label: &str, block: &str) -> String {
+    fn condense_chunks(&self, label: &str, block: &str, ok_calls: &AtomicUsize) -> String {
         let mut lines = block.lines();
         let header = lines.next().unwrap_or(label).to_string();
         let mut chunks: Vec<String> = Vec::new();
@@ -586,7 +766,8 @@ impl Summarizer {
         let mut parts: Vec<String> = Vec::new();
         for (i, ch) in chunks.iter().enumerate() {
             let prompt = format!("{header}\n(파트 {}/{total})\n{ch}", i + 1);
-            if let Some(s) = self.call(CONDENSE_SYSTEM_KO, &prompt) {
+            if let Ok(s) = self.call_map(CONDENSE_SYSTEM_KO, &prompt) {
+                ok_calls.fetch_add(1, Ordering::Relaxed);
                 parts.push(s.trim().to_string());
             }
         }
@@ -763,6 +944,205 @@ mod tests {
                 >= 2
         ); // 청크별 압축 여러 번
         assert_eq!(calls.last(), Some(&standard())); // 마지막은 종합
+    }
+
+    /// system 프롬프트마다 정해진 답을 주는 가짜 호출기 — 호출 때 받은 상한(초)도 기록한다.
+    /// `reduce_err` 가 Some 이면 종합(reduce, 템플릿 프롬프트) 호출만 그 사유로 실패시킨다.
+    struct Scripted {
+        seen: Mutex<Vec<(String, u64)>>,
+        reduce_err: Option<String>,
+        map_err: Option<String>,
+    }
+
+    impl Scripted {
+        fn new(reduce_err: Option<&str>, map_err: Option<&str>) -> Self {
+            Self {
+                seen: Mutex::new(Vec::new()),
+                reduce_err: reduce_err.map(str::to_string),
+                map_err: map_err.map(str::to_string),
+            }
+        }
+    }
+
+    impl LlmCaller for Scripted {
+        fn call(
+            &self,
+            system: &str,
+            user: &str,
+            cfg: &SummarizerConfig,
+            cancel: Option<&AtomicBool>,
+        ) -> Option<String> {
+            self.call_detailed(system, user, cfg, cancel).ok()
+        }
+
+        fn call_detailed(
+            &self,
+            system: &str,
+            _user: &str,
+            cfg: &SummarizerConfig,
+            _cancel: Option<&AtomicBool>,
+        ) -> Result<String, String> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((system.to_string(), cfg.timeout_secs));
+            let is_map = system == CONDENSE_SYSTEM_KO;
+            match (is_map, &self.map_err, &self.reduce_err) {
+                (true, Some(e), _) => Err(e.clone()),
+                (false, _, Some(e)) => Err(e.clone()),
+                (true, None, _) => Ok("세션 압축".into()),
+                (false, _, None) => Ok("요약".into()),
+            }
+        }
+    }
+
+    /// map-reduce 가 일어나는 큰 신호(세션 3개).
+    fn heavy_signal() -> String {
+        let line = "- 10:00 Q: 어떤 주제 질문입니다 → A: 어떤 응답 요지입니다\n";
+        let blocks: Vec<String> = ["s1", "s2", "s3"]
+            .iter()
+            .map(|n| format!("### [p] {n}\n{}", line.repeat(28)))
+            .collect();
+        format!(
+            "## Git\n- 커밋\n\n{SESSION_SECTION_HEADER}\n{}",
+            blocks.join("\n\n")
+        )
+    }
+
+    /// V2-1 — 상한은 설정값. 종합(reduce)은 전체, 세션별 압축(map)은 min(설정값, 300초).
+    #[test]
+    fn reduce_uses_full_timeout_and_map_is_capped() {
+        let caller = Box::new(Scripted::new(None, None));
+        let ptr: *const Scripted = &*caller;
+        let mut c = cfg(1500, 2);
+        c.timeout_secs = 600;
+        let s = Summarizer::with_caller(c, caller);
+        assert_eq!(
+            s.summarize_day(&heavy_signal(), "2026-09-14", "")
+                .as_deref(),
+            Some("요약")
+        );
+        // SAFETY: caller 는 Summarizer 가 살아있는 동안 유효.
+        let seen = unsafe { &*ptr }.seen.lock().unwrap().clone();
+        for (system, secs) in &seen {
+            let want = if system == CONDENSE_SYSTEM_KO {
+                300
+            } else {
+                600
+            };
+            assert_eq!(*secs, want, "{system:.20}");
+        }
+        assert_eq!(seen.last().map(|(_, t)| *t), Some(600)); // 마지막이 종합
+        assert!(seen.iter().any(|(sys, _)| sys == CONDENSE_SYSTEM_KO));
+
+        // 설정 상한이 map 천장보다 낮으면 map 도 그 값을 쓴다(더 키우지 않는다).
+        let caller = Box::new(Scripted::new(None, None));
+        let ptr: *const Scripted = &*caller;
+        let mut c = cfg(1500, 2);
+        c.timeout_secs = 120;
+        let s = Summarizer::with_caller(c, caller);
+        s.summarize_day(&heavy_signal(), "2026-09-14", "");
+        let seen = unsafe { &*ptr }.seen.lock().unwrap().clone();
+        assert!(seen.iter().all(|(_, t)| *t == 120));
+        assert_eq!(MAP_TIMEOUT_CAP_SECS, 300);
+    }
+
+    /// V2-2 — '요약을 안 한 날' 과 '요약이 실패한 날' 을 결과에서 구분한다.
+    #[test]
+    fn outcome_separates_off_from_failed() {
+        // (a) 사용자가 끈 것 — 실패가 아니다.
+        let s = Summarizer::new(SummarizerConfig {
+            provider: "none".into(),
+            ..Default::default()
+        });
+        let o = s.summarize_day_outcome(&standard(), "# facts", "2026-09-14", "");
+        assert_eq!(o, SummaryOutcome::default());
+        assert!(o.text.is_none() && o.error.is_none());
+
+        // (b) 요약기를 찾지 못함(모르는 provider) — 사유가 남는다.
+        let s = Summarizer::new(SummarizerConfig {
+            provider: "오타".into(),
+            ..Default::default()
+        });
+        let o = s.summarize_day_outcome(&standard(), "# facts", "2026-09-14", "");
+        assert!(o.text.is_none());
+        assert_eq!(o.error.as_deref(), Some(NO_SUMMARIZER));
+        assert!(NO_SUMMARIZER.starts_with("요약기 없음"));
+
+        // (c) 정상.
+        let s = Summarizer::with_caller(cfg(1500, 2), Box::new(Scripted::new(None, None)));
+        let o = s.summarize_day_outcome(&standard(), "## Git\n- 커밋", "2026-09-14", "");
+        assert_eq!(o, SummaryOutcome::ok("요약"));
+
+        // (d) 단일 호출 실패 — 사유 그대로. 얇은 껍데기는 여전히 None 만 준다.
+        let s = Summarizer::with_caller(
+            cfg(1500, 2),
+            Box::new(Scripted::new(Some("claude CLI 시간 초과(600초)"), None)),
+        );
+        let o = s.summarize_day_outcome(&standard(), "## Git\n- 커밋", "2026-09-14", "");
+        assert_eq!(o.text, None);
+        assert_eq!(o.error.as_deref(), Some("claude CLI 시간 초과(600초)"));
+        assert_eq!(
+            s.summarize_day_with(&standard(), "## Git\n- 커밋", "2026-09-14", ""),
+            None
+        );
+    }
+
+    /// V2-2 — map 은 됐는데 종합만 실패하면 세션별 압축본을 부분 요약으로 돌려준다.
+    #[test]
+    fn partial_summary_when_only_reduce_fails() {
+        let caller = Box::new(Scripted::new(Some("claude CLI 시간 초과(600초)"), None));
+        let s = Summarizer::with_caller(cfg(1500, 2), caller);
+        let o = s.summarize_day_outcome(&standard(), &heavy_signal(), "2026-09-14", "");
+        let text = o.text.expect("부분 요약");
+        assert!(text.starts_with(&format!("> {PARTIAL_HEADING}")));
+        assert!(text.contains("병합 단계 실패"));
+        assert_eq!(text.matches("세션 압축").count(), 3); // 세션 3개 압축본이 그대로
+        assert!(text.contains("### [p] s1") && text.contains("### [p] s3"));
+        assert_eq!(o.error.as_deref(), Some("claude CLI 시간 초과(600초)"));
+        // 얇은 껍데기(기존 호출자)는 부분 요약 본문을 그대로 받는다.
+        assert_eq!(
+            s.summarize_day_with(&standard(), &heavy_signal(), "2026-09-14", ""),
+            Some(text)
+        );
+
+        // map 까지 전부 실패하면 부분 요약도 없다 — 사유만 남는다.
+        let s = Summarizer::with_caller(
+            cfg(1500, 2),
+            Box::new(Scripted::new(
+                Some("claude CLI 시간 초과(600초)"),
+                Some("API 오류(HTTP 529)"),
+            )),
+        );
+        let o = s.summarize_day_outcome(&standard(), &heavy_signal(), "2026-09-14", "");
+        assert_eq!(o.text, None);
+        assert_eq!(o.error.as_deref(), Some("claude CLI 시간 초과(600초)"));
+    }
+
+    /// 실패 사유는 사람이 읽을 한 줄로 다듬는다(문서·알림에 그대로 들어간다).
+    #[test]
+    fn failure_reasons_are_short_one_liners() {
+        assert_eq!(snippet(" a \n b  c "), "a b c");
+        let long = snippet(&"가".repeat(300));
+        assert_eq!(long.chars().count(), 160);
+        assert!(long.ends_with('…'));
+        // 기본 구현(사유를 모르는 가짜 호출기)도 무언가는 남긴다.
+        struct Silent;
+        impl LlmCaller for Silent {
+            fn call(
+                &self,
+                _s: &str,
+                _u: &str,
+                _c: &SummarizerConfig,
+                _x: Option<&AtomicBool>,
+            ) -> Option<String> {
+                None
+            }
+        }
+        let s = Summarizer::with_caller(cfg(1500, 2), Box::new(Silent));
+        let o = s.summarize_day_outcome(&standard(), "## Git\n- 커밋", "2026-09-14", "");
+        assert_eq!(o.text, None);
+        assert!(o.error.is_some());
     }
 
     #[test]

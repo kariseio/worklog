@@ -254,6 +254,21 @@ pub struct SummarizerConfig {
     /// 기본 일지 템플릿 — standard | report | retro ([`crate::template::TEMPLATE_IDS`]).
     /// 모르는 값은 [`Config::normalize`] 에서 `standard` 로 돌아간다.
     pub template: String,
+    /// LLM 한 번 호출 상한(초). 하루 종합(reduce)은 이 값을 그대로 쓰고,
+    /// 세션별 압축(map)은 이 값과 [`crate::summarize::MAP_TIMEOUT_CAP_SECS`] 중 작은 쪽을 쓴다.
+    /// [`Config::normalize`] 가 [`SUMMARY_TIMEOUT_MIN`]~[`SUMMARY_TIMEOUT_MAX`] 로 조인다.
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+/// 요약 호출 상한 기본값(초). 무거운 날의 종합 호출이 4분에 잘려 하루가 통째로 날아가던
+/// v0.3.0 이전 값(240초)을 대신한다.
+pub const SUMMARY_TIMEOUT_DEFAULT: u64 = 600;
+pub const SUMMARY_TIMEOUT_MIN: u64 = 30;
+pub const SUMMARY_TIMEOUT_MAX: u64 = 3600;
+
+fn default_timeout_secs() -> u64 {
+    SUMMARY_TIMEOUT_DEFAULT
 }
 
 impl Default for SummarizerConfig {
@@ -267,6 +282,7 @@ impl Default for SummarizerConfig {
             map_reduce_chars: 20_000,
             map_workers: 4,
             template: crate::template::DEFAULT_TEMPLATE.into(),
+            timeout_secs: SUMMARY_TIMEOUT_DEFAULT,
         }
     }
 }
@@ -660,6 +676,11 @@ impl Config {
         // 기존 파일에 적힌 모델 이름은 마이그레이션 없이 그대로 존중한다.
         // 일지 템플릿도 정해진 값만 — 모르는 값·빈 칸은 standard 로.
         self.summarizer.template = crate::template::resolve(&self.summarizer.template).to_string();
+        // 요약 호출 상한은 상식적인 범위로 — 0 초(즉시 실패)·하루치(사실상 무한)를 막는다.
+        self.summarizer.timeout_secs = self
+            .summarizer
+            .timeout_secs
+            .clamp(SUMMARY_TIMEOUT_MIN, SUMMARY_TIMEOUT_MAX);
         // 겉모양은 정해진 값만 — 모르는 값·빈 칸은 기본값으로.
         let d = AppearanceConfig::default();
         let a = &mut self.appearance;
@@ -1044,6 +1065,43 @@ mod tests {
         // 사용자가 비우면 비운 대로 — '기본 모델' 로 되돌아간다.
         fs::write(&p, r#"{"summarizer":{"model":"  "}}"#).unwrap();
         assert_eq!(Config::load_from(&p).summarizer.model, "  ");
+    }
+
+    /// V2 — 요약 호출 상한: 기본 600초, 옛 파일(키 없음)도 600초, normalize 가 30~3600 으로 조인다.
+    #[test]
+    fn summarizer_timeout_defaults_and_clamps() {
+        assert_eq!(SummarizerConfig::default().timeout_secs, 600);
+        assert_eq!(SUMMARY_TIMEOUT_DEFAULT, 600);
+        // 키가 통째로 없는 옛 settings.json 도 기본값 600.
+        let c: Config = serde_json::from_str(V1_SAMPLE).unwrap();
+        assert_eq!(c.summarizer.timeout_secs, SUMMARY_TIMEOUT_DEFAULT);
+        let c: Config = serde_json::from_str(r#"{"summarizer":{"provider":"auto"}}"#).unwrap();
+        assert_eq!(c.summarizer.timeout_secs, SUMMARY_TIMEOUT_DEFAULT);
+
+        // 너무 짧은 값·비상식적으로 긴 값은 조인다.
+        let mut c = Config::default();
+        c.summarizer.timeout_secs = 0;
+        c.normalize();
+        assert_eq!(c.summarizer.timeout_secs, SUMMARY_TIMEOUT_MIN);
+        c.summarizer.timeout_secs = 999_999;
+        c.normalize();
+        assert_eq!(c.summarizer.timeout_secs, SUMMARY_TIMEOUT_MAX);
+        // 범위 안의 값은 그대로.
+        c.summarizer.timeout_secs = 900;
+        c.normalize();
+        assert_eq!(c.summarizer.timeout_secs, 900);
+
+        // 파일에서 읽을 때도 같은 정리가 걸리고, 왕복 저장에 살아남는다.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        fs::write(&p, r#"{"summarizer":{"timeout_secs":5}}"#).unwrap();
+        let c = Config::load_from(&p);
+        assert_eq!(c.summarizer.timeout_secs, SUMMARY_TIMEOUT_MIN);
+        c.save_to(&p).unwrap();
+        assert_eq!(Config::load_from(&p).summarizer.timeout_secs, 30);
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(raw["summarizer"]["timeout_secs"], 30);
     }
 
     #[test]

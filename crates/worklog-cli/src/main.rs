@@ -316,6 +316,10 @@ fn cmd_generate(cfg: &Config, cli: &Cli, date_spec: Option<&str>) -> ExitCode {
     if worklog.data.is_empty() {
         tracing::info!("수집된 데이터가 없습니다.");
     }
+    // 요약을 '안 한' 날과 '하려다 실패한' 날을 눈에 보이게 구분한다(V2).
+    if let Some(e) = &result.summary_error {
+        eprintln!("⚠ AI 요약 실패: {e}");
+    }
 
     if cli.dry_run {
         print!("{}", worklog.full_markdown);
