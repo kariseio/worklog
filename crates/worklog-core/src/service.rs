@@ -233,10 +233,12 @@ pub(crate) fn git_author_count(cfg: &crate::config::GitConfig) -> usize {
 /// 기록되면 수집기는 파일마다 세션 하나를 만든다. 그대로 두면 세션 수·집중시간·토큰이 배로
 /// 부풀고, worktree 마다 프로젝트 행이 따로 생긴다. 여기서:
 ///
-/// 1. [`Session::dedupe_key`] 가 같은 세션들을 하나로 병합한다.
-///    구간은 `[min(first_ts), max(last_ts)]`, 파일·명령은 합집합, 도구 호출 수는 합,
-///    출력 토큰은 **최댓값**(같은 세션을 두 번 읽은 것이므로 더하면 이중 계산),
-///    제목·의도는 비어 있지 않은 쪽, 질답은 `(시각, 질문)` 기준 중복 제거.
+/// 1. [`Session::dedupe_key`] 가 같은 세션들을 하나로 병합한다(1순위 키는 대화 뿌리
+///    `thread_id` — resume/fork 는 같은 대화를 새 session_id 로 다시 적는다).
+///    **더 완전한 쪽을 남긴다**: 구간은 `[min(first_ts), max(last_ts)]`, 파일·명령은
+///    합집합, 도구 호출 수와 출력 토큰은 **최댓값**(같은 세션을 두 번 읽은 것이므로
+///    더하면 이중 계산), 제목·의도·경로는 비어 있지 않은 쪽(둘 다 있으면 구간이 넓은 쪽),
+///    질답은 `(시각, 질문)` 기준 중복 제거.
 /// 2. cwd 가 git 저장소면 `git-common-dir` 로 실제 저장소를 찾아 `project` 를 그 이름으로
 ///    바꾼다. worktree 들은 common-dir 을 공유하므로 한 프로젝트로 모인다.
 ///
@@ -325,38 +327,38 @@ fn union_strings(base: &mut Vec<String>, extra: Vec<String>) {
 fn merge_session(base: &mut crate::model::Session, other: crate::model::Session) {
     // 더 넓은 구간을 가진 쪽의 식별 정보를 남긴다(짧은 조각이 cwd 를 덮어쓰지 않도록).
     let wider = span_secs(&other) > span_secs(base);
+    // 비어 있지 않은 값 우선, 둘 다 차 있으면 구간이 넓은(= 더 온전한) 쪽.
+    let take = |dst: &mut Option<String>, src: Option<String>| {
+        if !is_blank(&src) && (is_blank(dst) || wider) {
+            *dst = src;
+        }
+    };
     base.first_ts = min_opt(base.first_ts, other.first_ts);
     base.last_ts = max_opt(base.last_ts, other.last_ts);
     if base.session_id.is_none() {
         base.session_id = other.session_id;
     }
-    if other.cwd.is_some() && (wider || base.cwd.is_none()) {
-        base.cwd = other.cwd;
+    if is_blank(&base.thread_id) {
+        base.thread_id = other.thread_id;
     }
-    if other.project.is_some() && (wider || base.project.is_none()) {
-        base.project = other.project;
-    }
-    if other.repo_root.is_some() && (wider || base.repo_root.is_none()) {
-        base.repo_root = other.repo_root;
-    }
-    if other.git_branch.is_some() && (wider || base.git_branch.is_none()) {
-        base.git_branch = other.git_branch;
-    }
-    if is_blank(&base.title) && !is_blank(&other.title) {
-        base.title = other.title;
-    }
-    if is_blank(&base.intent) && !is_blank(&other.intent) {
-        base.intent = other.intent;
-    }
+    take(&mut base.cwd, other.cwd);
+    take(&mut base.project, other.project);
+    take(&mut base.repo_root, other.repo_root);
+    take(&mut base.git_branch, other.git_branch);
+    take(&mut base.title, other.title);
+    take(&mut base.intent, other.intent);
     union_strings(&mut base.files_edited, other.files_edited);
     union_strings(&mut base.files_read, other.files_read);
     union_strings(&mut base.commands, other.commands);
+    // 같은 대화의 두 사본이므로 도구 호출 수도 더하지 않고 도구별 최댓값을 쓴다.
     for (tool, n) in other.tool_counts {
-        *base.tool_counts.entry(tool).or_insert(0) += n;
+        let slot = base.tool_counts.entry(tool).or_insert(0);
+        *slot = (*slot).max(n);
     }
     // 같은 세션을 두 번 읽은 것이므로 더하지 않고 큰 쪽을 쓴다.
     base.output_tokens = base.output_tokens.max(other.output_tokens);
     base.qa_dropped = base.qa_dropped.max(other.qa_dropped);
+    // 질답은 합집합 — 턴이 더 많은 쪽을 담되 한쪽에만 있는 턴도 잃지 않는다.
     merge_qa(&mut base.qa, other.qa);
 }
 
@@ -1558,7 +1560,7 @@ mod tests {
         assert_eq!(s.files_edited, vec!["a.rs", "b.rs", "c.rs"]); // 합집합
         assert_eq!(s.files_read, vec!["r.rs"]);
         assert_eq!(s.commands, vec!["cargo test", "cargo clippy"]);
-        assert_eq!(s.tool_counts.get("Edit"), Some(&5)); // 도구는 합
+        assert_eq!(s.tool_counts.get("Edit"), Some(&3)); // 도구는 도구별 최댓값
         assert_eq!(s.tool_counts.get("Read"), Some(&1));
         assert_eq!(s.output_tokens, 4_000); // 같은 세션이므로 더하지 않고 최댓값
         assert_eq!(s.qa_dropped, 2);
@@ -1571,6 +1573,63 @@ mod tests {
         let before = data.claude.clone();
         normalize_sessions(&mut data);
         assert_eq!(data.claude, before);
+    }
+
+    /// resume/fork 사본 3개(= 실데이터 09-16 사슬)가 들어오면 **가장 완전한 데이터**가 남는다.
+    #[test]
+    fn merge_keeps_the_most_complete_copy() {
+        use crate::time::parse_iso;
+        let files = |n: usize| (0..n).map(|i| format!("f{i}.rs")).collect::<Vec<_>>();
+        let tools = |edit: u32, read: u32| {
+            let mut m = IndexMap::new();
+            m.insert("Edit".to_string(), edit);
+            m.insert("Read".to_string(), read);
+            m
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let copy = |id: &str, n: usize, tk: u64, last: &str| Session {
+            session_id: Some(id.into()),
+            thread_id: Some("ROOT".into()), // 같은 대화의 사본
+            cwd: Some(cwd.clone()),
+            project: Some("agent-platform-backend".into()),
+            files_edited: files(n),
+            tool_counts: tools(n as u32, 3),
+            output_tokens: tk,
+            first_ts: parse_iso("2026-09-15T23:36:20Z"),
+            last_ts: parse_iso(last),
+            ..Default::default()
+        };
+        let mut data = DailyData::new(d(2026, 9, 16), "Asia/Seoul");
+        data.claude = Some(SessionData {
+            sessions: vec![
+                Session {
+                    title: Some("짧은 사본 제목".into()),
+                    ..copy("87295285", 17, 60_370, "2026-09-16T05:16:08Z")
+                },
+                copy("0bd3a091", 31, 120_956, "2026-09-16T05:27:05Z"),
+                Session {
+                    intent: Some("보통 이런식으로 만들기도 하는거야 근데?".into()),
+                    ..copy("84858925", 34, 120_956, "2026-09-16T05:27:05Z")
+                },
+            ],
+        });
+        normalize_sessions(&mut data);
+
+        let ss = &data.claude.as_ref().unwrap().sessions;
+        assert_eq!(ss.len(), 1, "세 사본이 한 세션으로");
+        let s = &ss[0];
+        assert_eq!(s.dedupe_key(), "claude:thread:ROOT");
+        assert_eq!(s.files_edited.len(), 34, "가장 많이 담은 쪽(합집합)");
+        assert_eq!(s.tool_counts.get("Edit"), Some(&34)); // 도구별 최댓값
+        assert_eq!(s.tool_counts.get("Read"), Some(&3)); // 합(9)이 아니다
+        assert_eq!(s.output_tokens, 120_956); // 최댓값(이중 계산 없음)
+        assert_eq!(s.last_ts, parse_iso("2026-09-16T05:27:05Z")); // 가장 넓은 구간
+        assert_eq!(s.title.as_deref(), Some("짧은 사본 제목")); // 비어 있지 않은 쪽
+        assert_eq!(
+            s.intent.as_deref(),
+            Some("보통 이런식으로 만들기도 하는거야 근데?")
+        );
     }
 
     /// session_id 가 없는 세션은 (cwd, 시작 분)으로 묶인다. 분이 다르면 따로 남는다.

@@ -99,6 +99,11 @@ impl Agent {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub session_id: Option<String>,
+    /// 대화 스레드의 뿌리 — resume/fork 로 같은 대화가 새 파일(새 session_id)에 다시
+    /// 기록돼도 값이 같다. Claude 수집기가 첫 메시지 uuid(parentUuid 가 없는 레코드)를
+    /// 넣는다. 중복 세션을 하나로 묶는 1순위 키([`Session::dedupe_key`]).
+    #[serde(default)]
+    pub thread_id: Option<String>,
     /// cwd 의 basename (표시용). worktree 면 실제 저장소명.
     pub project: Option<String>,
     /// 실제 프로젝트 절대경로.
@@ -139,16 +144,21 @@ pub struct Session {
 impl Session {
     /// 같은 세션이 여러 로그 파일(worktree·이어받기)로 쪼개져 들어왔을 때 하나로 묶는 키.
     ///
-    /// `session_id` 가 있으면 그것을, 없으면 `(cwd, 시작 분)` 을 쓴다. 에이전트가 다르면
-    /// id 공간이 달라 우연히 겹칠 수 있으므로 항상 앞에 에이전트 태그를 붙인다.
+    /// 우선순위: `thread_id`(대화 뿌리) → `session_id` → `(cwd, 시작 분)`.
+    /// resume/fork 는 **같은 대화를 새 session_id 로 다시 기록**하므로 id 만으로는 못 묶는다.
+    /// 에이전트가 다르면 id 공간이 달라 우연히 겹칠 수 있으므로 항상 앞에 에이전트 태그를 붙인다.
     pub fn dedupe_key(&self) -> String {
         let agent = self.agent.as_str();
-        if let Some(id) = self
-            .session_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
+        let nonblank = |v: &Option<String>| {
+            v.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        if let Some(thread) = nonblank(&self.thread_id) {
+            return format!("{agent}:thread:{thread}");
+        }
+        if let Some(id) = nonblank(&self.session_id) {
             return format!("{agent}:id:{id}");
         }
         let cwd = self.cwd.as_deref().unwrap_or("");
@@ -408,7 +418,32 @@ mod tests {
     }
 
     #[test]
-    fn dedupe_key_prefers_session_id_then_cwd_and_minute() {
+    fn dedupe_key_prefers_thread_then_session_id_then_cwd_and_minute() {
+        // thread_id 가 1순위 — resume/fork 로 session_id 가 달라져도 같은 대화로 묶인다.
+        let threaded = |id: &str| Session {
+            session_id: Some(id.into()),
+            thread_id: Some("ROOT".into()),
+            cwd: Some("D:/repo".into()),
+            ..Default::default()
+        };
+        assert_eq!(threaded("A").dedupe_key(), "claude:thread:ROOT");
+        assert_eq!(threaded("A").dedupe_key(), threaded("B").dedupe_key());
+        // 빈 thread_id 는 없는 것으로 보고 session_id 로 내려간다.
+        let blank_thread = Session {
+            thread_id: Some("  ".into()),
+            ..threaded("A")
+        };
+        assert_eq!(blank_thread.dedupe_key(), "claude:id:A");
+        // thread_id 가 같아도 에이전트가 다르면 다른 세션
+        assert_ne!(
+            threaded("A").dedupe_key(),
+            Session {
+                agent: Agent::Codex,
+                ..threaded("A")
+            }
+            .dedupe_key()
+        );
+
         let base = Session {
             session_id: Some("S".into()),
             cwd: Some("D:/repo".into()),
