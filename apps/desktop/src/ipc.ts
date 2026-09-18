@@ -253,6 +253,8 @@ export interface Config {
       private_key: string;
       private_key_path: string;
     };
+    /** 요약 프롬프트에서 뺄 저장소·폴더 글롭 (예: `D:\works\a-corp\**`). */
+    exclude: string[];
   };
   automation: {
     schedule: {

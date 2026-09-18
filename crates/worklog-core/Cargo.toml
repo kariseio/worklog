@@ -37,6 +37,8 @@ regex = "1"
 gix = { version = "0.87", features = ["blob-diff", "revision"] }
 # 저장소 자동 탐색: 병렬 디렉터리 워커.
 ignore = "0.4"
+# 제외 목록 글롭 매칭(요약 프롬프트에서 뺄 저장소·폴더).
+globset = "0.4"
 # 저장소별 병렬 로그 수집.
 rayon = "1"
 # canonicalize 결과의 \\?\ 접두사 제거.

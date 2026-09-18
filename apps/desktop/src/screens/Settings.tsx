@@ -1069,6 +1069,27 @@ function SourcesTab(props: { f: Ctx }) {
 
   return (
     <>
+      <section class="settings-sec">
+        <SecHead title="제외 목록" sub="여기 걸린 저장소·폴더는 수집은 되지만 요약(Claude)으로 보내지 않습니다" />
+        <Field
+          label="제외할 저장소·폴더"
+          top
+          hint="글롭 지원 · 예: D:\works\a-corp\** · 적은 폴더와 그 아래가 모두 빠집니다. 문서에는 '[비공개 프로젝트]' 집계만 남습니다"
+        >
+          <ListEditor
+            items={f.draft.sources.exclude}
+            name="제외 경로"
+            addLabel="제외 추가"
+            pick="folder"
+            placeholder="D:\works\a-corp\**"
+            onChange={(items, save) => {
+              f.set("sources", "exclude", items);
+              if (save) f.now();
+            }}
+          />
+        </Field>
+      </section>
+
       <section class={`settings-sec ${g().enabled ? "" : "is-off"}`}>
         <SecHead
           title="git 커밋"
@@ -1610,6 +1631,7 @@ const PROVIDERS = [
 function SummaryTab(props: { f: Ctx }) {
   const f = props.f;
   const s = () => f.draft.summarizer;
+  const excluded = () => f.draft.sources.exclude.filter((p) => p.trim() !== "");
   const cli = () => settings()?.claude_cli ?? null;
   const usesCli = () => s().provider === "auto" || s().provider === "claude_cli";
   const providerOpts = () => (PROVIDERS.some((p) => p.value === s().provider) ? PROVIDERS : [...PROVIDERS, { value: s().provider, label: s().provider }]);
@@ -1652,6 +1674,19 @@ function SummaryTab(props: { f: Ctx }) {
 
   return (
     <>
+      {/*
+        전송 고지(§4 원칙 4 · N0) — 무엇이 밖으로 나가는지 탭 맨 위에 못 박는다. 앞 문장은 제외 목록과 무관하게
+        **항상** 보인다(§5-1 N0 '고정 문구'). 뒷 문장은 실제로 제외 목록이 있을 때만 — 없는데 "보내지 않습니다"는 거짓말이다.
+      */}
+      <p class="settings-egress small">
+        <Icon name="info" size={15} />
+        <span>
+          요약을 만들 때 세션 질답 · 커밋 메시지 · 회의 제목 · 메모가 Claude 로 전송됩니다.
+          <Show when={excluded().length} fallback=" 그 외에는 아무것도 나가지 않습니다.">
+            {" 제외 목록에 있는 저장소·폴더는 보내지 않습니다."}
+          </Show>
+        </span>
+      </p>
       <section class="settings-sec">
         <SecHead title="요약 엔진" />
         <Field label="요약 방식" top>

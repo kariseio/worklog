@@ -7819,6 +7819,7 @@ dependencies = [
  "dirs 7.0.0",
  "dunce",
  "gix",
+ "globset",
  "ignore",
  "indexmap 2.14.2",
  "jsonwebtoken",

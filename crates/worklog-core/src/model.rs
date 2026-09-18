@@ -103,6 +103,11 @@ pub struct Session {
     pub project: Option<String>,
     /// 실제 프로젝트 절대경로.
     pub cwd: Option<String>,
+    /// cwd 가 속한 **물리 저장소 루트** 경로(worktree 면 본체 루트). 저장소가 아니면 None.
+    /// [`crate::service::normalize_sessions`] 가 git-common-dir 로 찾아 채운다 —
+    /// 제외 글롭(§5-1 N0)이 형제 worktree 를 놓치지 않게 하는 근거.
+    #[serde(default)]
+    pub repo_root: Option<String>,
     pub git_branch: Option<String>,
     /// ai-title (세션 요약 한 줄).
     pub title: Option<String>,

@@ -223,6 +223,12 @@ pub struct SourcesConfig {
     pub claude: ClaudeConfig,
     pub codex: CodexConfig,
     pub naverworks: NaverWorksConfig,
+    /// 요약 프롬프트에서 뺄 저장소·폴더 글롭 (예: `D:\works\a-corp\**`).
+    ///
+    /// 수집은 그대로 하되, 여기에 걸린 세션·커밋은 LLM 에 보내는 신호에서 빠지고
+    /// 문서에는 [`crate::exclude::PRIVATE_PROJECT`] 집계 한 행으로만 남는다.
+    /// (product-plan §3 D7 · §4 원칙 4 · §5-1 N0)
+    pub exclude: Vec<String>,
 }
 
 // --------------------------------------------------------------------------- //
@@ -634,6 +640,7 @@ impl Config {
         g.authors = dedupe_trimmed(&g.authors);
         g.scan_roots = dedupe_trimmed(&g.scan_roots);
         g.repos = dedupe_trimmed(&g.repos);
+        self.sources.exclude = dedupe_trimmed(&self.sources.exclude);
         let nw = &mut self.sources.naverworks;
         nw.calendar_ids = dedupe_trimmed(&nw.calendar_ids);
         if nw.scope.trim().is_empty() {

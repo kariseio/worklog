@@ -10,6 +10,7 @@ pub mod analyze;
 pub mod collect;
 pub mod config;
 pub mod drives;
+pub mod exclude;
 pub mod feed;
 pub mod live;
 pub mod model;

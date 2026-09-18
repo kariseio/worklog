@@ -3,7 +3,7 @@
 //! 수집기 실행 순서/결합, 요약, 문서 조합, 저장, 히스토리 조회를 한곳에 모아
 //! `worklog-cli` 와 Tauri 앱이 동일하게 호출한다.
 
-use std::{collections::HashMap, path::Path};
+use std::{borrow::Cow, collections::HashMap, path::Path};
 
 use chrono::NaiveDate;
 use chrono_tz::Tz;
@@ -17,6 +17,7 @@ use crate::{
         codex::CodexCollector, git::GitCollector, naverworks::NaverWorksCollector,
     },
     config::{Config, SOURCE_NAMES},
+    exclude::{Excluder, PRIVATE_PROJECT, filter_for_signal, redact_for_document},
     model::{DailyData, NoteItem, WorkLog},
     notes,
     output::{
@@ -241,7 +242,7 @@ pub(crate) fn git_author_count(cfg: &crate::config::GitConfig) -> usize {
 /// [`collect`] 와 [`crate::live::Live`] 재조립 양쪽에서 [`disambiguate_repo_names`] 직전에
 /// 부른다. 여러 번 불러도 결과가 같다(멱등).
 pub fn normalize_sessions(data: &mut DailyData) {
-    let mut cache: HashMap<String, Option<String>> = HashMap::new();
+    let mut cache: HashMap<String, Option<RepoInfo>> = HashMap::new();
     if let Some(sd) = &mut data.claude {
         normalize_session_list(&mut sd.sessions, &mut cache);
     }
@@ -252,7 +253,7 @@ pub fn normalize_sessions(data: &mut DailyData) {
 
 fn normalize_session_list(
     sessions: &mut Vec<crate::model::Session>,
-    cache: &mut HashMap<String, Option<String>>,
+    cache: &mut HashMap<String, Option<RepoInfo>>,
 ) {
     use crate::model::Session;
     use indexmap::map::Entry;
@@ -269,21 +270,32 @@ fn normalize_session_list(
     let mut out: Vec<Session> = merged.into_values().collect();
     for s in &mut out {
         if let Some(cwd) = s.cwd.clone()
-            && let Some(name) = repo_name_of(&cwd, cache)
+            && let Some((name, root)) = repo_of(&cwd, cache)
         {
             s.project = Some(name);
+            s.repo_root = Some(root);
         }
     }
     out.sort_by_key(|s| (s.first_ts.is_none(), s.first_ts));
     *sessions = out;
 }
 
-/// cwd → 실제 저장소 이름(worktree 는 본체 이름). 저장소가 아니면 None. 같은 cwd 는 한 번만 본다.
-fn repo_name_of(cwd: &str, cache: &mut HashMap<String, Option<String>>) -> Option<String> {
+/// (저장소 이름, 물리 저장소 루트 경로) — worktree 면 둘 다 **본체** 것이다.
+type RepoInfo = (String, String);
+
+/// cwd → 실제 저장소 이름·루트(worktree 는 본체). 저장소가 아니면 None. 같은 cwd 는 한 번만 본다.
+///
+/// 루트까지 세션에 남기는 이유: 제외 글롭이 형제 worktree 경로를 알 리 없으므로
+/// (`C:\…\workspaces\foo\wt` 는 `D:\works\foo\**` 에 걸리지 않는다) 물리 저장소를
+/// 들고 있어야 [`crate::exclude`] 가 같은 저장소로 알아본다.
+fn repo_of(cwd: &str, cache: &mut HashMap<String, Option<RepoInfo>>) -> Option<RepoInfo> {
     if let Some(v) = cache.get(cwd) {
         return v.clone();
     }
-    let v = crate::collect::git::identify(Path::new(cwd)).map(|i| i.name);
+    let v = crate::collect::git::identify(Path::new(cwd)).map(|i| {
+        let root = crate::collect::git::repo_root_of(Path::new(&i.common_dir));
+        (i.name, root.to_string_lossy().into_owned())
+    });
     cache.insert(cwd.to_string(), v.clone());
     v
 }
@@ -322,6 +334,9 @@ fn merge_session(base: &mut crate::model::Session, other: crate::model::Session)
     }
     if other.project.is_some() && (wider || base.project.is_none()) {
         base.project = other.project;
+    }
+    if other.repo_root.is_some() && (wider || base.repo_root.is_none()) {
+        base.repo_root = other.repo_root;
     }
     if other.git_branch.is_some() && (wider || base.git_branch.is_none()) {
         base.git_branch = other.git_branch;
@@ -568,21 +583,52 @@ pub struct Rendered {
     pub signal: String,
 }
 
+/// 수집 데이터 → 렌더 산출물([`Rendered`]).
+///
+/// 제외 목록(`sources.exclude`, product-plan §4 원칙 4 · §5-1 N0)이 걸리면 데이터를 **두 갈래**로
+/// 나눈다. 문서(사실 정리·지표)는 걸린 항목을 [`PRIVATE_PROJECT`] 한 행의 집계로만 남기고,
+/// 요약기에 보내는 `signal` 에서는 그 세션·커밋을 통째로 뺀다 — 이름도 경로도 질답도 나가지 않는다.
 pub fn render_all(cfg: &Config, data: &DailyData, statuses: &[SourceStatus], tz: Tz) -> Rendered {
-    let facts = render_facts(data, tz);
+    let ex = Excluder::new(&cfg.sources.exclude);
+    let hit = ex.hits(data);
+    if hit {
+        tracing::info!(
+            "제외 목록 {}건 적용 — 걸린 세션·커밋은 요약에 보내지 않고 문서에는 {} 집계만 남깁니다",
+            ex.patterns().len(),
+            PRIVATE_PROJECT
+        );
+    }
+    let doc: Cow<DailyData> = if hit {
+        Cow::Owned(redact_for_document(data, &ex))
+    } else {
+        Cow::Borrowed(data)
+    };
+    let sig: Cow<DailyData> = if hit {
+        Cow::Owned(filter_for_signal(data, &ex))
+    } else {
+        Cow::Borrowed(data)
+    };
+
+    let facts = render_facts(&doc, tz);
     let availability = availability_line(cfg, statuses);
-    let analysis = analyze(data, tz);
+    let analysis = analyze(&doc, tz);
     let analysis_md = render_analysis(&analysis);
     let mut signal = render_work_signal(
-        data,
+        &sig,
         tz,
         &format!("가용 데이터 — {}", availability.replace('\n', " / ")),
     );
-    let tl = render_timeline_for_llm(&analysis);
+    // 타임라인도 '보낼 데이터'로 다시 뽑는다 — 문서용 분석에는 제외 항목의 구간이 들어 있다.
+    let sig_analysis: Cow<Analysis> = if hit {
+        Cow::Owned(analyze(&sig, tz))
+    } else {
+        Cow::Borrowed(&analysis)
+    };
+    let tl = render_timeline_for_llm(&sig_analysis);
     if !tl.is_empty() {
         signal = format!("{signal}\n{tl}");
     }
-    let section = render_session_section(&render_session_blocks(data, tz, 8));
+    let section = render_session_section(&render_session_blocks(&sig, tz, 8));
     if !section.is_empty() {
         signal = format!("{}\n\n{section}", signal.trim_end());
     }
@@ -1294,6 +1340,49 @@ mod tests {
             .collect();
         assert_eq!(repo_rows.len(), 3); // 세션 3개가 모두 같은 프로젝트명으로
 
+        // worktree 세션도 **물리 저장소 루트**(본체)를 들고 나온다 — 제외 글롭이
+        // worktree 경로를 몰라도 같은 저장소로 알아보게 하는 근거(N0).
+        let want = dunce::canonicalize(&main)
+            .unwrap()
+            .to_string_lossy()
+            .to_lowercase();
+        let all = &data.claude.as_ref().unwrap().sessions;
+        for s in all
+            .iter()
+            .filter(|s| s.project.as_deref() == Some("agent-platform-backend"))
+        {
+            assert_eq!(
+                s.repo_root.as_deref().map(str::to_lowercase),
+                Some(want.clone()),
+                "worktree 세션의 저장소 루트"
+            );
+        }
+        // 저장소가 아닌 cwd 는 루트도 없다.
+        let plain = all
+            .iter()
+            .find(|s| s.project.as_deref() == Some("그대로"))
+            .unwrap();
+        assert!(plain.repo_root.is_none());
+
+        // 본체 경로 하나만 적어도 worktree 세션까지 제외에 걸린다 — 걸리는 근거는 루트뿐이다
+        // (cwd 는 형제 폴더라 글롭 밖이고, 글롭이 경로라 프로젝트 이름으로는 걸리지 않는다).
+        let ex = crate::exclude::Excluder::new(&[dunce::canonicalize(&main)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()]);
+        assert_eq!(all.iter().filter(|s| ex.matches_session(s)).count(), 3);
+        for s in all.iter().filter(|s| {
+            s.session_id
+                .as_deref()
+                .is_some_and(|id| id == "b" || id == "c")
+        }) {
+            assert!(
+                !ex.matches(s.cwd.as_deref().unwrap()),
+                "worktree cwd 는 글롭 밖"
+            );
+            assert!(ex.matches_session(s));
+        }
+
         // 분석에서도 한 행으로 합쳐진다.
         let a = crate::analyze::analyze(&data, get_tz("Asia/Seoul"));
         let row = a
@@ -1327,5 +1416,250 @@ mod tests {
         assert_eq!(ev["git"].as_array().unwrap().len(), 0);
         assert_eq!(short_hash("a").len(), 6);
         assert_ne!(short_hash("a"), short_hash("b"));
+    }
+
+    // --- 제외 목록 (§5-1 N0) --------------------------------------------- //
+
+    /// 제외 대상 저장소 하나 + 평범한 저장소 하나가 섞인 하루.
+    fn day_with_private_repo() -> DailyData {
+        let ts = |s: &str| {
+            Some(
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .unwrap()
+                    .with_timezone(&Utc),
+            )
+        };
+        let mut data = DailyData::new(d(2026, 9, 18), "Asia/Seoul");
+        data.claude = Some(SessionData {
+            sessions: vec![
+                Session {
+                    session_id: Some("private".into()),
+                    project: Some("a-corp-billing".into()),
+                    cwd: Some(r"D:\works\a-corp\billing".into()),
+                    title: Some("정산 마감 배치 오류".into()),
+                    intent: Some("정산 마감이 왜 실패하는지 봐 줘".into()),
+                    files_edited: vec![r"D:\works\a-corp\billing\src\settle.py".into()],
+                    commands: vec!["pytest tests/settle".into()],
+                    output_tokens: 900,
+                    first_ts: ts("2026-09-18T01:00:00Z"),
+                    last_ts: ts("2026-09-18T02:00:00Z"),
+                    qa: vec![crate::model::QaTurn {
+                        time: "10:03".into(),
+                        question: "정산 테이블 스키마가 뭐야".into(),
+                        answer: "settlement 테이블은 …".into(),
+                    }],
+                    ..Default::default()
+                },
+                Session {
+                    session_id: Some("public".into()),
+                    project: Some("worklog".into()),
+                    cwd: Some(r"D:\study\Daily Work Log".into()),
+                    title: Some("제외 목록 붙이기".into()),
+                    files_edited: vec![r"D:\study\Daily Work Log\src\exclude.rs".into()],
+                    output_tokens: 100,
+                    first_ts: ts("2026-09-18T03:00:00Z"),
+                    last_ts: ts("2026-09-18T04:00:00Z"),
+                    ..Default::default()
+                },
+            ],
+        });
+        let commit = |repo: &str, path: &str, subject: &str, when: &str| GitCommit {
+            repo: repo.into(),
+            hash: "0123456789abcdef".into(),
+            author: "me".into(),
+            when: ts(when).unwrap(),
+            subject: subject.into(),
+            files_changed: 2,
+            insertions: 40,
+            deletions: 5,
+            repo_path: path.into(),
+        };
+        data.git = Some(GitData {
+            commits: vec![
+                commit(
+                    "a-corp-billing",
+                    r"D:\works\a-corp\billing\.git",
+                    "feat: 정산 마감 재시도",
+                    "2026-09-18T02:10:00Z",
+                ),
+                commit(
+                    "worklog",
+                    r"D:\study\Daily Work Log\.git",
+                    "feat: 제외 글롭",
+                    "2026-09-18T04:10:00Z",
+                ),
+            ],
+        });
+        data
+    }
+
+    /// 걸린 저장소의 이름·경로·질답은 요약 프롬프트에 **0회** 나오고,
+    /// 문서(사실 정리·지표)에는 `[비공개 프로젝트]` 집계로 남는다.
+    #[test]
+    fn excluded_repo_never_reaches_the_summary_signal() {
+        let tz = get_tz("Asia/Seoul");
+        let data = day_with_private_repo();
+        let mut cfg = Config::default();
+
+        // 제외 없이 만들면 신호에 그대로 실린다 — 대조군.
+        let open = render_all(&cfg, &data, &[], tz);
+        assert!(open.signal.contains("a-corp-billing"));
+        assert!(open.signal.contains("정산 테이블 스키마가 뭐야"));
+
+        cfg.sources.exclude = vec![r"D:\works\a-corp\**".into()];
+        let r = render_all(&cfg, &data, &[], tz);
+        for leak in [
+            "a-corp",
+            "billing",
+            r"D:\works",
+            "D:/works",
+            "정산 마감 배치 오류",
+            "정산 마감이 왜 실패하는지 봐 줘",
+            "정산 테이블 스키마가 뭐야",
+            "settlement",
+            "settle.py",
+            "정산 마감 재시도",
+            "pytest tests/settle",
+        ] {
+            assert!(
+                !r.signal.contains(leak),
+                "요약 프롬프트에 제외 항목이 남았습니다: {leak:?}\n---\n{}",
+                r.signal
+            );
+        }
+        // 제외되지 않은 쪽은 그대로 나간다(하루가 통째로 비지 않는다).
+        assert!(r.signal.contains("worklog"));
+        assert!(r.signal.contains("제외 목록 붙이기"));
+
+        // 문서: 이름은 사라지고 집계는 남는다.
+        assert!(r.facts.contains(PRIVATE_PROJECT));
+        assert!(!r.facts.contains("a-corp") && !r.facts.contains("정산"));
+        assert!(!r.facts.contains("settle.py"));
+        assert!(r.analysis_md.contains(PRIVATE_PROJECT));
+
+        // 지표는 제외 전과 **한 숫자도 다르지 않다** — 이름만 가려질 뿐 하루가 줄지 않는다.
+        let a = &r.analysis;
+        let full = crate::analyze::analyze(&data, tz);
+        assert_eq!(a.kpis, full.kpis);
+        assert_eq!(a.kpis.commits, 2);
+        assert_eq!(a.kpis.sessions, 2);
+        assert_eq!(a.kpis.files_edited, 2);
+        assert_eq!(a.kpis.tokens, 1000);
+        let row = a
+            .projects
+            .iter()
+            .find(|p| p.project == PRIVATE_PROJECT)
+            .expect("[비공개 프로젝트] 행");
+        let before = full
+            .projects
+            .iter()
+            .find(|p| p.project == "a-corp-billing")
+            .expect("제외 전 행");
+        assert_eq!((row.sessions, row.commits, row.files), (1, 1, 1));
+        assert_eq!(
+            (row.minutes, row.insertions, row.deletions),
+            (before.minutes, before.insertions, before.deletions)
+        );
+        assert_eq!(a.commit_types.get("기능").copied(), Some(2));
+        assert!(a.projects.iter().all(|p| !p.project.contains("a-corp")));
+        // 타임라인에도 이름이 남지 않는다.
+        assert!(
+            a.timeline
+                .iter()
+                .all(|e| !e.project.contains("a-corp") && !e.label.contains("정산"))
+        );
+    }
+
+    /// 형제 worktree(경로가 글롭 밖) 와 경로를 잃은 같은 프로젝트 세션도 함께 빠진다.
+    ///
+    /// 실측(2026-09-16): `D:\study\ai-web-novel\**` 를 적었는데 그 저장소의 worktree가
+    /// `C:\…\workspaces\…` 에 있어 세션 3개 중 2개가 요약 신호로 샜다. 이제 두 겹으로 막는다 —
+    /// (1) 세션이 들고 있는 **물리 저장소 루트**, (2) 걸린 프로젝트 이름의 닫힘.
+    #[test]
+    fn excluded_repo_covers_worktrees_and_same_project_sessions() {
+        let tz = get_tz("Asia/Seoul");
+        let ts = |s: &str| {
+            Some(
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .unwrap()
+                    .with_timezone(&Utc),
+            )
+        };
+        let mut data = day_with_private_repo();
+        let sessions = &mut data.claude.as_mut().unwrap().sessions;
+        // (1) cwd 는 글롭 밖, 물리 저장소 루트만 안쪽.
+        sessions.push(Session {
+            session_id: Some("worktree".into()),
+            project: Some("a-corp-billing".into()),
+            cwd: Some(r"C:\Users\me\workspaces\wt-settle".into()),
+            repo_root: Some(r"D:\works\a-corp\billing".into()),
+            title: Some("정산 재시도 시나리오".into()),
+            intent: Some("worktree 에서 정산 재시도 돌려 줘".into()),
+            files_edited: vec![r"C:\Users\me\workspaces\wt-settle\src\retry.py".into()],
+            commands: vec!["pytest tests/retry".into()],
+            output_tokens: 300,
+            first_ts: ts("2026-09-18T05:00:00Z"),
+            last_ts: ts("2026-09-18T05:30:00Z"),
+            ..Default::default()
+        });
+        // (2) cwd·루트 모두 글롭 밖 — 프로젝트 이름만 같다(루트 해석 실패).
+        sessions.push(Session {
+            session_id: Some("orphan".into()),
+            project: Some("a-corp-billing".into()),
+            cwd: Some(r"C:\Users\me\workspaces\wt-gone".into()),
+            title: Some("정산 마감 로그 확인".into()),
+            files_edited: vec![r"C:\Users\me\workspaces\wt-gone\src\audit.py".into()],
+            output_tokens: 200,
+            first_ts: ts("2026-09-18T06:00:00Z"),
+            last_ts: ts("2026-09-18T06:20:00Z"),
+            ..Default::default()
+        });
+
+        let mut cfg = Config::default();
+        cfg.sources.exclude = vec![r"D:\works\a-corp\**".into()];
+        let r = render_all(&cfg, &data, &[], tz);
+        for leak in [
+            "a-corp",
+            "billing",
+            "wt-settle",
+            "wt-gone",
+            "workspaces",
+            "retry.py",
+            "audit.py",
+            "정산",
+            "pytest tests/retry",
+        ] {
+            assert!(
+                !r.signal.contains(leak),
+                "요약 프롬프트에 제외 항목이 남았습니다: {leak:?}\n---\n{}",
+                r.signal
+            );
+            assert!(
+                !r.facts.contains(leak),
+                "문서에 제외 항목이 남았습니다: {leak:?}"
+            );
+        }
+        // 제외되지 않은 쪽은 그대로 나간다.
+        assert!(r.signal.contains("worklog") && r.signal.contains("제외 목록 붙이기"));
+
+        // 지표는 제외 전과 한 숫자도 다르지 않다 — 이름만 가려질 뿐 하루가 줄지 않는다.
+        let full = crate::analyze::analyze(&data, tz);
+        assert_eq!(r.analysis.kpis, full.kpis);
+        assert_eq!(r.analysis.kpis.sessions, 4);
+        assert_eq!(r.analysis.kpis.tokens, 1500);
+        // 셋 다 [비공개 프로젝트] 한 행으로 접힌다.
+        let row = r
+            .analysis
+            .projects
+            .iter()
+            .find(|p| p.project == PRIVATE_PROJECT)
+            .expect("[비공개 프로젝트] 행");
+        assert_eq!(row.sessions, 3);
+        assert!(
+            r.analysis
+                .projects
+                .iter()
+                .all(|p| !p.project.contains("a-corp"))
+        );
     }
 }

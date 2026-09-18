@@ -251,6 +251,7 @@ const config: Config = {
     claude: { enabled: true, projects_dir: "", include_read: false, max_intent_len: 300, max_qa_turns: 120, max_answer_len: 180 },
     codex: { enabled: true, sessions_dir: "", include_read: false, max_intent_len: 300, max_qa_turns: 120, max_answer_len: 180, max_lines: 200000 },
     naverworks: { enabled: true, user_id: "me@company.com", calendar_id: "", calendar_ids: ["cal-1"], calendars: [{ calendar_id: "cal-1", name: "내 캘린더" }, { calendar_id: "cal-2", name: "팀 일정" }], scope: "calendar.read", client_id: "abc123", client_secret: "", service_account: "svc@company", private_key: "", private_key_path: "" },
+    exclude: [],
   },
   automation: {
     schedule: { enabled: true, time: "18:30", weekdays: [1, 2, 3, 4, 5], mode: "notify" },

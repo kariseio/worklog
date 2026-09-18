@@ -104,6 +104,8 @@ export default function Today() {
   const date = () => viewDate() ?? feed()?.date ?? todayStr();
   const realtime = () => settings()?.config.automation.realtime.enabled ?? false;
   const shortcut = () => settings()?.config.automation.global_shortcut ?? "";
+  // 요약에서 빠지는 저장소·폴더(§5-1 N0). 목록이 비면 줄 자체를 만들지 않는다.
+  const excluded = () => (settings()?.config.sources.exclude ?? []).filter((p) => p.trim() !== "");
 
   // 시각 동작(알림 / 자동 생성) 상태 필
   const sched = () => {
@@ -485,6 +487,16 @@ export default function Today() {
           </Button>
         </Show>
       </header>
+
+      {/* '지금 일지 만들기' 아래 한 줄 — 무엇이 요약에서 빠지는지(§4 원칙 4 · N0). 글롭은 도움말로. */}
+      <Show when={excluded().length}>
+        <div class="today-feedbar">
+          <div class="today-feedbar-row muted small" title={`요약에서 빠지는 저장소·폴더\n${excluded().join("\n")}`}>
+            <Icon name="info" size={13} />
+            <span>제외 {excluded().length}곳 · 요약에 보내지 않음</span>
+          </div>
+        </div>
+      </Show>
 
       <Show when={doneLine()}>
         {(d) => (
