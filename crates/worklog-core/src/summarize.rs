@@ -1372,6 +1372,62 @@ mod tests {
         assert_eq!(o.error.as_deref(), Some("claude CLI 시간 초과(600초)"));
     }
 
+    /// V2 — 압축이 실패한 세션을 질답 원문으로 되돌릴 때도 **주입 발화는 옮기지 않는다**.
+    /// 블록은 `render_session_blocks` 가 만든 진짜 출력이라 렌더→폴백→문서까지 한 번에 검증된다.
+    #[test]
+    fn failed_map_never_pastes_injected_utterances() {
+        use crate::model::{DailyData, QaTurn, Session, SessionData};
+        use crate::render::{render_session_blocks, render_session_section};
+
+        const INJECTED: &str =
+            "<recommended_plugins> Here is a list of plugins the user may want to install";
+        let turn = |q: &str| QaTurn {
+            time: "10:00".into(),
+            question: q.into(),
+            answer: "어떤 응답 요지입니다".into(),
+        };
+        let session = |title: &str, injected: bool| {
+            let mut qa: Vec<QaTurn> = Vec::new();
+            if injected {
+                qa.push(turn(INJECTED));
+            }
+            qa.extend((0..28).map(|i| turn(&format!("어떤 주제 질문입니다 {i}"))));
+            Session {
+                project: Some("p".into()),
+                title: Some(title.into()),
+                qa,
+                ..Default::default()
+            }
+        };
+        let mut d = DailyData::new(
+            chrono::NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(),
+            "Asia/Seoul",
+        );
+        d.claude = Some(SessionData {
+            sessions: vec![session("s1", false), session("s2", true)],
+        });
+        let blocks = render_session_blocks(&d, crate::time::get_tz("Asia/Seoul"), 8);
+        let signal = format!("## Git\n- 커밋\n\n{}", render_session_section(&blocks));
+        // 요약기에 들어가는 신호부터 이미 깨끗하다.
+        assert!(!signal.contains("recommended_plugins"), "{signal:.400}");
+        assert!(signal.contains("- (시스템 주입 발화 1개 생략)"));
+
+        // s2 만 압축 실패 → 질답 원문 폴백. 주입 발화는 문서에도 나오지 않는다.
+        let s = Summarizer::with_caller(cfg(1500, 2), Box::new(MapFailsFor("[p] s2")));
+        let o = s.summarize_day_outcome(&standard(), &signal, "2026-09-21", "");
+        let text = o.text.expect("부분 요약");
+        assert!(!text.contains("recommended_plugins"), "{text}");
+        assert!(text.contains("- (시스템 주입 발화 1개 생략)"), "{text}");
+        let s2 = text
+            .split("### [p] s2")
+            .nth(1)
+            .and_then(|t| t.split("### ").next())
+            .expect("s2 구간");
+        // 여덟 줄 상한은 그대로 — 생략 안내 한 줄 + 질답 일곱 줄.
+        assert_eq!(s2.matches("Q:").count(), VERBATIM_QA_LINES - 1);
+        assert_eq!(o.error.as_deref(), Some("claude CLI 시간 초과(600초)"));
+    }
+
     /// 실패 사유는 사람이 읽을 한 줄로 다듬는다(문서·알림에 그대로 들어간다).
     #[test]
     fn failure_reasons_are_short_one_liners() {

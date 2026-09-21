@@ -110,7 +110,9 @@ const TRIVIAL_COMMANDS: [&str; 14] = [
 /// ([`mcp_title_candidate`]).
 const MCP_TOOL_PREFIX: &str = "mcp__";
 
-/// 이 문구가 들어 있으면 사람이 쓴 제목이 아니다(도구 출력·주입 문구).
+/// **제목 자리에서만** — 이 문구가 어디에 들어 있든 사람이 쓴 제목이 아니다(도구 출력·주입 문구).
+/// 붙여넣은 Traceback 과 문장 중간의 도구 이름도 포함한다: 질답 자료로는 남길 값이지만
+/// 제목으로 쓸 수는 없다. 질답 줄 생략은 더 좁은 [`is_injected_utterance`] 를 쓴다.
 const TITLE_BLOCK_CONTAINS: [&str; 5] = [
     "The following is the Codex agent history",
     "Traceback (most recent call last)",
@@ -119,6 +121,16 @@ const TITLE_BLOCK_CONTAINS: [&str; 5] = [
     // 도구 이름 자체(`mcp__서버__툴`). 위 두 문장은 표현이 조금만 달라져도 빠져나가지만
     // (`Call these MCP tools in order …`), 실제 도구 지시문에는 이 토큰이 거의 늘 붙는다.
     // 사람이 쓴 말에는 나오지 않으므로 오탐이 없다 — "MCP 기능을 지원할 수 있어?" 는 그대로 통과.
+    MCP_TOOL_PREFIX,
+];
+
+/// **첫머리**에 이게 오면 시스템·도구가 주입한 발화다([`is_injected_utterance`]).
+/// [`TITLE_BLOCK_CONTAINS`] 에서 Traceback 을 뺀 목록 — 붙여넣은 로그는 주입이 아니다.
+const INJECTED_PREFIXES: [&str; 5] = [
+    "The following is the Codex agent history",
+    "Call the MCP tool",
+    "Do the following with MCP tools",
+    "Called the ", // 도구 호출 기록(`Called the Bash tool with …`)
     MCP_TOOL_PREFIX,
 ];
 
@@ -157,15 +169,25 @@ fn mostly_non_letters(t: &str) -> bool {
     t.chars().filter(|c| c.is_alphabetic()).count() * 2 < solid
 }
 
-/// 차단 패턴에 걸리는 후보인지. 공백이 이미 접힌 문자열을 받는다.
-fn is_blocked_title(t: &str) -> bool {
-    if t.chars().count() < 2 {
-        return true;
-    }
+/// 사람이 쓴 말이 아니라 **주입된 발화**인지 — 시스템 태그(`<recommended_plugins>` ·
+/// `<system-reminder>`), 도구 지시문(`Call the MCP tool …` · `mcp__서버__툴 …`),
+/// `Read <경로>` · `Called the …` 같은 도구 호출 기록, 통째로 경로·URL 한 줄.
+///
+/// 판정은 전부 **첫머리(첫 줄)에 앵커링**한다 — 질답 줄 생략([`render_session_blocks`])이
+/// 쓰는 판정이라 문장 어디든 걸리면 사람이 올린 자료까지 지운다. 실제로 그랬다
+/// (2026-09-16 09:36 `[agent_platform_file]`: 붙여넣은 `Traceback …` 하나뿐인 세션이
+/// 머리글 + 생략 한 줄로 텅 비었다). 그래서 붙여넣은 Traceback 과 문장 중간의 도구 이름
+/// ("이 `mcp__suda-local__get_workflow` 왜 실패해?") 은 여기서 걸리지 않는다 —
+/// **제목**으로 못 쓰는 것과([`is_blocked_title`]) 질답에서 지우는 것은 다른 문제다.
+///
+/// 공백은 안에서 접으므로 수집 원문을 그대로 넘겨도 된다.
+pub fn is_injected_utterance(text: &str) -> bool {
+    let squashed = squash_ws(text);
+    let t = squashed.as_str();
     if t.starts_with('<') {
         return true; // <recommended_plugins> · <system-reminder> · <command-…>
     }
-    if TITLE_BLOCK_CONTAINS.iter().any(|p| t.contains(p)) {
+    if INJECTED_PREFIXES.iter().any(|p| t.starts_with(p)) {
         return true;
     }
     if let Some(rest) = t.strip_prefix("Read ")
@@ -173,13 +195,19 @@ fn is_blocked_title(t: &str) -> bool {
     {
         return true;
     }
-    if t.starts_with("Called the ") {
-        return true;
-    }
-    if PATH_ONLY_RE.is_match(t) || URL_ONLY_RE.is_match(t) {
-        return true;
-    }
-    mostly_non_letters(t)
+    PATH_ONLY_RE.is_match(t) || URL_ONLY_RE.is_match(t)
+}
+
+/// 차단 패턴에 걸리는 후보인지. 공백이 이미 접힌 문자열을 받는다.
+///
+/// 제목은 주입 발화([`is_injected_utterance`])보다 **넓게** 막는다 — 한 글자짜리, 글자보다
+/// 기호가 많은 덩어리, 그리고 문구가 어디에 박혀 있든 걸리는 [`TITLE_BLOCK_CONTAINS`]
+/// (붙여넣은 Traceback 은 질답 자료로는 쓸모 있어도 제목으로는 못 쓴다).
+fn is_blocked_title(t: &str) -> bool {
+    t.chars().count() < 2
+        || TITLE_BLOCK_CONTAINS.iter().any(|p| t.contains(p))
+        || is_injected_utterance(t)
+        || mostly_non_letters(t)
 }
 
 /// 제목 안의 로컬 절대경로를 파일명으로 줄인다(`D:\study\p\render.rs` → `render.rs`).
@@ -292,11 +320,18 @@ fn files_title_candidate(files: &[String]) -> String {
 }
 
 /// 제목으로 쓸 만한 원본이 하나라도 있는지. 없으면 그 세션은 제목 자리에 내보내지 않는다.
+///
+/// [`session_title`] 이 실제로 보는 후보와 같은 목록을 본다 — 한쪽에만 있으면 이름 붙일 수
+/// 있는 세션을 여기서 걸러 타임라인·정제 신호에서 통째로 지운다(V2). 그래서 발화·편집 파일이
+/// 전부 비고 알맹이 있는 셸 명령 하나(`cargo test --workspace`)나 MCP 도구 호출만 남은
+/// 세션도 포함한다. 시시한 명령(`ls`·`cd`)은 [`command_title_candidate`] 가 이미 거른다.
 pub fn has_title_source(s: &Session) -> bool {
     !s.title.as_deref().unwrap_or("").trim().is_empty()
         || !s.intent.as_deref().unwrap_or("").trim().is_empty()
         || s.qa.iter().any(|t| !t.question.trim().is_empty())
         || !s.files_edited.is_empty()
+        || !command_title_candidate(&s.commands).is_empty()
+        || !mcp_title_candidate(&s.tool_counts).is_empty()
 }
 
 /// 세션 하나의 표시용 제목 — 제목을 내보내는 모든 자리의 단일 통로.
@@ -886,6 +921,9 @@ pub fn render_work_signal(data: &DailyData, tz: Tz, header: &str) -> String {
 /// 요약(단일/맵리듀스)용: 비-meta 세션마다 (라벨, 질답 블록).
 ///
 /// 각 블록 = 세션 제목 + 시간대 + 질답 흐름('시:분 Q: … → A: …') + 수정 파일.
+/// 주입 발화([`is_injected_utterance`])는 질답 줄에서 빠지고 `- (시스템 주입 발화 N개 생략)`
+/// 한 줄로 대신한다 — 요약기가 '뭔가 빠졌다'는 것은 알되 원문은 못 보게. 그렇게 해서 남는
+/// 줄이 하나도 없으면 `- 요청: …` 로 내려간다(질답이 애초에 없던 경우와 같은 자리).
 pub fn render_session_blocks(data: &DailyData, tz: Tz, max_files: usize) -> Vec<(String, String)> {
     let mut blocks = Vec::new();
     for s in data.all_sessions() {
@@ -906,11 +944,25 @@ pub fn render_session_blocks(data: &DailyData, tz: Tz, max_files: usize) -> Vec<
             _ => String::new(),
         };
         let mut lines = vec![format!("### [{proj}{tag}] {title}{span}")];
+        let mut kept_any_qa = false;
         if !s.qa.is_empty() {
             if s.qa_dropped > 0 {
                 lines.push(format!("- (앞부분 질답 {}개 생략)", s.qa_dropped));
             }
-            for turn in &s.qa {
+            // 주입 발화(시스템 태그·도구 지시문·경로)는 제목에서 막아 놓고도 질답 줄에는 원문
+            // 그대로 나가고 있었다 — 요약기가 그걸 그날의 요청으로 읽고, 부분 요약 폴백은
+            // 문서에까지 옮겼다(V2). 같은 판정으로 걸러내되 몇 개를 뺐는지는 한 줄로 알린다.
+            // `s.qa` 자체는 건드리지 않는다(시각은 analyze 의 공백 구간 계산에 쓰인다).
+            let kept: Vec<_> =
+                s.qa.iter()
+                    .filter(|t| !is_injected_utterance(&t.question))
+                    .collect();
+            let injected = s.qa.len() - kept.len();
+            if injected > 0 {
+                lines.push(format!("- (시스템 주입 발화 {injected}개 생략)"));
+            }
+            kept_any_qa = !kept.is_empty();
+            for turn in kept {
                 let q = squash_ws(&turn.question);
                 let a = squash_ws(&turn.answer);
                 let mut seg = if turn.time.is_empty() {
@@ -923,7 +975,10 @@ pub fn render_session_blocks(data: &DailyData, tz: Tz, max_files: usize) -> Vec<
                 }
                 lines.push(seg);
             }
-        } else if let Some(intent) = s.intent.as_deref().filter(|i| !i.is_empty()) {
+        }
+        // 남은 질답 줄이 하나도 없으면(애초에 없었거나 전부 주입 발화였거나) 요청 한 줄이라도
+        // 싣는다 — 생략 줄만 달린 머리글은 요약기에 아무 내용도 주지 못한다.
+        if !kept_any_qa && let Some(intent) = s.intent.as_deref().filter(|i| !i.trim().is_empty()) {
             lines.push(format!("- 요청: {}", squash_ws(intent)));
         }
         if !s.files_edited.is_empty() {
@@ -1207,6 +1262,241 @@ mod tests {
         assert!(sec.starts_with(SESSION_SECTION_HEADER));
         assert!(sec.ends_with("외 2개\n"));
         assert!(render_session_section(&[]).is_empty());
+    }
+
+    /// V2 — 주입 발화는 제목뿐 아니라 **질답 줄**에서도 빠진다(요약기 입력·문서로 새지 않게).
+    #[test]
+    fn injected_questions_are_dropped_from_qa_lines() {
+        let tz = get_tz("Asia/Seoul");
+        let qa = |t: &str, q: &str| QaTurn {
+            time: t.into(),
+            question: q.into(),
+            answer: "응답 요지".into(),
+        };
+        let s = Session {
+            project: Some("proj".into()),
+            qa: vec![
+                qa(
+                    "10:00",
+                    "<recommended_plugins>\nHere is a list of plugins the user may want",
+                ),
+                qa("10:05", "결제 재시도 로직 정리해줘"),
+                qa("10:10", "Called the Read tool with: D:/repo/src/pay.rs"),
+            ],
+            ..Default::default()
+        };
+        let mut d = DailyData::new(NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(), "Asia/Seoul");
+        d.claude = Some(SessionData {
+            sessions: vec![s.clone()],
+        });
+        let block = render_session_blocks(&d, tz, 8)[0].1.clone();
+        assert_eq!(
+            block,
+            "### [proj] 결제 재시도 로직 정리해줘\n- (시스템 주입 발화 2개 생략)\n\
+             - 10:05 Q: 결제 재시도 로직 정리해줘 → A: 응답 요지"
+        );
+        assert!(!block.contains("recommended_plugins"), "{block}");
+        assert!(!block.contains("Called the "), "{block}");
+        // 렌더만 달라진다 — 질답(시각)은 데이터에 그대로 남는다(analyze 의 공백 구간 계산용).
+        assert_eq!(d.claude.as_ref().unwrap().sessions[0].qa.len(), 3);
+
+        // 전부 주입 발화면 생략 줄만 남고 Q 줄은 하나도 없다.
+        let all_injected = Session {
+            qa: vec![s.qa[0].clone(), s.qa[2].clone()],
+            ..s
+        };
+        let mut d2 = DailyData::new(d.target_date, "Asia/Seoul");
+        d2.claude = Some(SessionData {
+            sessions: vec![all_injected],
+        });
+        let block2 = render_session_blocks(&d2, tz, 8)[0].1.clone();
+        assert!(
+            block2.ends_with("- (시스템 주입 발화 2개 생략)"),
+            "{block2}"
+        );
+        assert!(!block2.contains("Q: "), "{block2}");
+
+        // 판정 자체 — 제목 차단은 주입 발화보다 넓다(한 글자·기호 덩어리·붙여넣은 로그·
+        // 문장 중간의 도구 이름은 제목에서만 막힌다).
+        assert!(is_injected_utterance("  <system-reminder> 무시  "));
+        assert!(is_injected_utterance(
+            "mcp__suda-local__get_workflow 를 불러라"
+        ));
+        assert!(is_injected_utterance(
+            "Call the MCP tool mcp__suda-local__get_workflow with {\"id\":\"a\"}"
+        ));
+        assert!(is_injected_utterance("Do the following with MCP tools: 1)"));
+        assert!(is_injected_utterance(
+            "The following is the Codex agent history for the"
+        ));
+        assert!(is_injected_utterance("Read D:\\a\\b.rs"));
+        assert!(is_injected_utterance("Read D:/repo/src/render.rs"));
+        assert!(is_injected_utterance("https://example.com/a"));
+        assert!(is_injected_utterance("D:/repo/src/render.rs"));
+        assert!(!is_injected_utterance("결제 재시도 로직 정리해줘"));
+        assert!(!is_injected_utterance("ㅇ"));
+        assert!(!is_injected_utterance("+1 / -3"));
+        assert_eq!(
+            clean_title(&["ㅇ", "+1 / -3", "진짜 제목"], None),
+            "진짜 제목"
+        );
+    }
+
+    /// 질답 생략은 **첫머리 앵커**다 — 사람이 붙여넣은 로그와 도구 이름을 인용한 질문은 남는다.
+    /// (2026-09-16 09:36 `[agent_platform_file]`: 유일한 발화가 붙여넣은 Traceback 이라
+    /// 블록이 머리글 + '(시스템 주입 발화 1개 생략)' 으로 텅 비었다)
+    #[test]
+    fn pasted_logs_and_quoted_tool_names_are_kept_in_qa_lines() {
+        let tz = get_tz("Asia/Seoul");
+        const TRACEBACK: &str = "Traceback (most recent call last):\n  \
+             File \"/app/app/services/KmsUploadService.py\", line 42, in upload\n    \
+             raise KmsError(resp)";
+        let qa = |q: &str| QaTurn {
+            time: "09:36".into(),
+            question: q.into(),
+            answer: "원인은 만료된 키".into(),
+        };
+        let s = Session {
+            project: Some("agent_platform_file".into()),
+            qa: vec![
+                qa(TRACEBACK),
+                qa("이 mcp__suda-local__get_workflow 왜 실패해?"),
+            ],
+            ..Default::default()
+        };
+        let mut d = DailyData::new(NaiveDate::from_ymd_opt(2026, 9, 16).unwrap(), "Asia/Seoul");
+        d.claude = Some(SessionData {
+            sessions: vec![s.clone()],
+        });
+        let block = render_session_blocks(&d, tz, 8)[0].1.clone();
+        assert!(!block.contains("시스템 주입 발화"), "{block}");
+        assert!(block.contains("KmsUploadService.py"), "{block}");
+        assert!(block.contains("왜 실패해?"), "{block}");
+        // 질답 줄에는 남아도 **제목**으로는 여전히 못 쓴다 — 둘 다 막혀 프로젝트 폴백.
+        assert!(
+            block.starts_with("### [agent_platform_file] [agent_platform_file] 세션\n"),
+            "{block}"
+        );
+        assert!(!is_injected_utterance(TRACEBACK));
+        assert!(!is_injected_utterance(
+            "이 mcp__suda-local__get_workflow 왜 실패해?"
+        ));
+        assert!(is_blocked_title(&squash_ws(TRACEBACK)));
+        assert!(is_blocked_title(
+            "이 mcp__suda-local__get_workflow 왜 실패해?"
+        ));
+
+        // 반면 진짜 주입 발화 셋은 그대로 빠진다.
+        let injected = Session {
+            qa: vec![
+                qa("<recommended_plugins>\n- foo"),
+                qa("Call the MCP tool mcp__x__y with {\"id\":\"a\"}"),
+                qa("Read D:\\a\\b.rs"),
+            ],
+            ..s
+        };
+        let mut d2 = DailyData::new(d.target_date, "Asia/Seoul");
+        d2.claude = Some(SessionData {
+            sessions: vec![injected],
+        });
+        let block2 = render_session_blocks(&d2, tz, 8)[0].1.clone();
+        assert!(block2.contains("- (시스템 주입 발화 3개 생략)"), "{block2}");
+        assert!(!block2.contains("Q: "), "{block2}");
+    }
+
+    /// 남은 질답 줄이 하나도 없으면 `- 요청:` 한 줄로라도 내용을 싣는다(생략 줄만 남지 않게).
+    #[test]
+    fn fully_elided_qa_falls_back_to_intent_line() {
+        let tz = get_tz("Asia/Seoul");
+        let s = Session {
+            project: Some("proj".into()),
+            title: Some("KMS 업로드 점검".into()),
+            intent: Some("KMS 업로드  실패\n원인 찾아줘".into()),
+            qa: vec![QaTurn {
+                time: "10:00".into(),
+                question: "<system-reminder> 무시".into(),
+                answer: "a".into(),
+            }],
+            ..Default::default()
+        };
+        let mut d = DailyData::new(NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(), "Asia/Seoul");
+        d.claude = Some(SessionData { sessions: vec![s] });
+        assert_eq!(
+            render_session_blocks(&d, tz, 8)[0].1,
+            "### [proj] KMS 업로드 점검\n- (시스템 주입 발화 1개 생략)\n\
+             - 요청: KMS 업로드 실패 원인 찾아줘"
+        );
+    }
+
+    /// 알맹이 있는 셸 명령 하나만 남은 세션도 제목 원본이 있다([`session_title`] 과 같은 목록).
+    #[test]
+    fn commands_alone_are_a_title_source() {
+        let tz = get_tz("Asia/Seoul");
+        let cmd = Session {
+            project: Some("repoA".into()),
+            commands: vec!["cargo test --workspace".into()],
+            first_ts: parse_iso("2026-09-21T01:00:00Z"),
+            last_ts: parse_iso("2026-09-21T02:00:00Z"),
+            ..Default::default()
+        };
+        assert!(has_title_source(&cmd));
+        assert_eq!(session_title(&cmd), "cargo test --workspace");
+
+        // 시시한 명령(`ls`)뿐이면 제목이 될 원본이 아니다.
+        let trivial = Session {
+            commands: vec!["ls".into()],
+            ..cmd.clone()
+        };
+        assert!(!has_title_source(&trivial));
+
+        // 두 호출자(정제 신호·타임라인)가 실제로 이 세션을 내보낸다.
+        let mut d = DailyData::new(NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(), "Asia/Seoul");
+        d.claude = Some(SessionData {
+            sessions: vec![cmd],
+        });
+        assert!(render_work_signal(&d, tz, "").contains("- **repoA**: cargo test --workspace"));
+        assert_eq!(analyze(&d, tz).timeline[0].label, "cargo test --workspace");
+    }
+
+    /// V2 — MCP 도구만 남은 세션도 제목 원본이 있다(타임라인·정제 신호에서 통째로 빠지던 건).
+    #[test]
+    fn mcp_tool_counts_alone_is_a_title_source() {
+        let tz = get_tz("Asia/Seoul");
+        let mcp = Session {
+            project: Some("agent-platform-backend".into()),
+            tool_counts: [("mcp__suda-local__get_workflow".to_string(), 3u32)]
+                .into_iter()
+                .collect(),
+            first_ts: parse_iso("2026-09-21T01:00:00Z"),
+            last_ts: parse_iso("2026-09-21T02:00:00Z"),
+            ..Default::default()
+        };
+        assert!(has_title_source(&mcp));
+        assert_eq!(session_title(&mcp), "suda-local · get_workflow 호출");
+
+        // 일반 도구(Read·Edit)만 있으면 제목이 될 원본이 아니다 — 여전히 false.
+        let plain = Session {
+            tool_counts: [("Read".to_string(), 9u32), ("Edit".to_string(), 2)]
+                .into_iter()
+                .collect(),
+            ..mcp.clone()
+        };
+        assert!(!has_title_source(&plain));
+        assert!(!has_title_source(&Session::default()));
+
+        // 두 호출자(정제 신호·타임라인)가 실제로 이 세션을 내보낸다.
+        let mut d = DailyData::new(NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(), "Asia/Seoul");
+        d.claude = Some(SessionData {
+            sessions: vec![mcp],
+        });
+        assert!(
+            render_work_signal(&d, tz, "")
+                .contains("- **agent-platform-backend**: suda-local · get_workflow 호출")
+        );
+        assert_eq!(
+            analyze(&d, tz).timeline[0].label,
+            "suda-local · get_workflow 호출"
+        );
     }
 
     #[test]
